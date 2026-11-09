@@ -127,6 +127,7 @@ alter table public.bonuses add column if not exists lat float8;
 alter table public.bonuses add column if not exists lng float8;
 alter table public.bonuses add column if not exists radius int;
 alter table public.bonuses add column if not exists claim_unlocked boolean not null default false;
+alter table public.bonuses add column if not exists expect text not null default '';
 
 -- First organiser code: ADMIN-2026 (change it in the app under Settings).
 insert into public.settings (id, admin_hash)
@@ -412,13 +413,20 @@ begin
       select * into b from bonuses where id = tgt;
       if not found or b.claim_team is distinct from tid then return jsonb_build_object('ok', false, 'reason', 'not_claimed'); end if;
       if not b.claim_unlocked then return jsonb_build_object('ok', false, 'reason', 'locked'); end if;
+      st := 'review'; aw := 0;
+      if b.expect <> '' and coalesce(p->>'body', '') <> '' then
+        select array_agg(_norm(x)) into alts from unnest(string_to_array(b.expect, '|')) x where _norm(x) <> '';
+        if _norm(p->>'body') = any(alts) then st := 'ok'; aw := b.value; end if;
+      end if;
       insert into subs (team_id, target, target_id, body, photo, status, awarded, note, at)
-      values (tid, 'bonus', tgt, left(coalesce(p->>'body', ''), 4000), p->>'photo', 'review', 0, '', now())
+      values (tid, 'bonus', tgt, left(coalesce(p->>'body', ''), 4000), p->>'photo', st, aw, '', now())
       on conflict (team_id, target_id) do update set body = excluded.body, photo = excluded.photo,
-        status = 'review', awarded = 0, note = '', at = now();
+        status = excluded.status, awarded = excluded.awarded, note = '', at = now();
       -- one round = one team: the bonus closes until the organiser offers it again
       update bonuses set claim_team = null, claim_at = null, claim_unlocked = false, released = false,
         done_by = (select array_agg(distinct x) from unnest(done_by || tid) x) where id = tgt;
+      perform _bump();
+      return jsonb_build_object('ok', true, 'status', st, 'awarded', aw);
     end if;
 
   elsif p_action = 'claim' then
@@ -544,12 +552,13 @@ begin
 
   elsif p_action = 'bonus_save' then
     if nullif(p->>'id', '') is null then
-      insert into bonuses (title, prompt, resp, value, lat, lng, radius)
+      insert into bonuses (title, prompt, resp, value, expect, lat, lng, radius)
       values (p->>'title', coalesce(p->>'prompt', ''), coalesce(p->>'resp', 'photo'), coalesce((p->>'value')::int, 25),
-              (p->>'lat')::float8, (p->>'lng')::float8, nullif(p->>'radius', '')::int);
+              coalesce(p->>'expect', ''), (p->>'lat')::float8, (p->>'lng')::float8, nullif(p->>'radius', '')::int);
     else
       update bonuses set title = coalesce(p->>'title', title), prompt = coalesce(p->>'prompt', prompt),
         resp = coalesce(p->>'resp', resp), value = coalesce((p->>'value')::int, value),
+        expect = coalesce(p->>'expect', expect),
         lat = coalesce((p->>'lat')::float8, lat), lng = coalesce((p->>'lng')::float8, lng),
         radius = case when p ? 'radius' then nullif(p->>'radius', '')::int else radius end
       where id = (p->>'id')::uuid;

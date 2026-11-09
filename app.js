@@ -487,7 +487,7 @@ function openBonus(id) {
       if (b.resp !== "photo" && !text) return toast("Type your answer first.");
       if (b.resp !== "text" && !file) return toast("Add a photo first.");
       const btn = $("#b-go", sh); btn.disabled = true; btn.textContent = file ? "Uploading photo…" : "Sending…"; busy = true;
-      try { const photo = file ? await uploadPhoto(file) : null; const r = await act({target:"bonus", target_id:id, body:text, photo}, "submit", "Bonus submitted — on to your next stop!"); if (r.ok) { busy = false; file = null; closeSheet(); return; } }
+      try { const photo = file ? await uploadPhoto(file) : null; const r = await act({target:"bonus", target_id:id, body:text, photo}, "submit", r => r.status === "ok" ? `Correct! +${r.awarded} bonus points` : "Bonus submitted — the organiser will check it. On to your next stop!"); if (r.ok) { busy = false; file = null; closeSheet(); return; } }
       catch (err) { toast(err.message); }
       busy = false; btn.disabled = false; btn.textContent = "Submit bonus";
     };
@@ -749,7 +749,7 @@ function openTeamEditor(id) {
 }
 
 function targetInfo(s) {
-  if (s.target === "bonus") { const b = S.bonuses.find(x => x.id === s.target_id); return {label:"Bonus", color:GOLD, ink:"#2A2200", title:b ? b.title : "(deleted bonus)", value:b ? b.value : 0, n:"★"}; }
+  if (s.target === "bonus") { const b = S.bonuses.find(x => x.id === s.target_id); return {label:"Bonus", color:GOLD, ink:"#2A2200", title:b ? b.title : "(deleted bonus)", value:b ? b.value : 0, n:"★", expect:b ? b.expect : ""}; }
   const p = S.points.find(x => x.id === s.target_id); const k = KINDS[p ? p.kind : "question"];
   return {label:k.label, color:k.c, ink:"#fff", title:p ? p.title : "(deleted point)", value:p ? p.value : 0, n:p ? p.n : "?", expect:p ? p.expect : ""};
 }
@@ -801,15 +801,18 @@ function openBonusEditor(id, at) {
     <form class="form" id="be"><label>Title (visible on the map)<input id="be-t" maxlength="80" required value="${esc(b ? b.title : "")}" placeholder="e.g. Human pyramid" autofocus></label>
     <label>Instructions (shown once the team is there)<textarea id="be-p" rows="4" placeholder="What should the team do here?">${esc(b ? b.prompt : "")}</textarea></label>
     <div class="row2"><label>Teams respond with<select id="be-r">${Object.entries(RESP).map(([k, v]) => `<option value="${k}"${(b ? b.resp : "photo") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label><label>Points<input id="be-v" type="number" min="0" step="1" value="${b ? b.value : 25}"></label></div>
+    <label id="be-expwrap">Correct answer (optional)<input id="be-expect" value="${esc(b ? b.expect || "" : "")}" placeholder="e.g. 1824 | eighteen twenty-four"><small>A matching answer earns the points straight away. Separate alternatives with |. Leave empty to check by hand in Review.</small></label>
     <div class="row2"><label>Unlock radius (m)<input id="be-rad" type="number" min="5" max="500" step="1" value="${b && b.radius ? b.radius : ""}" placeholder="${cfg().radius || 15}"></label>
     <label>Location<input id="be-coord" value="${ll ? ll.lat.toFixed(6) + ", " + ll.lng.toFixed(6) : ""}" placeholder="52.3389, 4.8721" inputmode="decimal"></label></div>
     <div class="actions">${b ? `<button type="button" class="btn danger" id="be-del">Delete</button>` : ""}<span class="spacer"></span><button class="btn primary">${b ? "Save" : "Create"}</button></div></form>`, sh => {
     $("[data-close]", sh).onclick = closeSheet;
+    const syncExp = () => { $("#be-expwrap", sh).hidden = $("#be-r", sh).value === "photo"; };
+    $("#be-r", sh).onchange = syncExp; syncExp();
     if (b) $("#be-del", sh).onclick = e => { if (!armed(e.currentTarget, "Tap again to delete")) return; closeSheet(); act({id:b.id}, "bonus_delete", "Bonus deleted"); };
     $("#be", sh).onsubmit = async e => { e.preventDefault();
       const m = $("#be-coord", sh).value.match(/(-?\d+(?:\.\d+)?)\s*[,; ]\s*(-?\d+(?:\.\d+)?)/);
       if (!m) return toast("Enter the location as latitude, longitude — or use “Add bonus” and tap the map.");
-      const data = {id:b ? b.id : "", title:$("#be-t", sh).value.trim(), prompt:$("#be-p", sh).value.trim(), resp:$("#be-r", sh).value, value:Math.max(0, Math.round(+$("#be-v", sh).value || 0)), lat:+m[1], lng:+m[2], radius:$("#be-rad", sh).value.trim()};
+      const data = {id:b ? b.id : "", title:$("#be-t", sh).value.trim(), prompt:$("#be-p", sh).value.trim(), resp:$("#be-r", sh).value, value:Math.max(0, Math.round(+$("#be-v", sh).value || 0)), expect:$("#be-r", sh).value === "photo" ? "" : $("#be-expect", sh).value.trim(), lat:+m[1], lng:+m[2], radius:$("#be-rad", sh).value.trim()};
       if (!data.title) return; const r = await act(data, "bonus_save", b ? "Bonus saved" : "Bonus created — release it when you're ready"); if (r.ok) closeSheet(); };
   });
 }
