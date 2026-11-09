@@ -200,9 +200,9 @@ function photoPicker(sh, inputId, prevId, onFile) {
 const dark = matchMedia("(prefers-color-scheme: dark)").matches;
 function makeMap(el) {
   const m = L.map(el, {zoomControl:false, attributionControl:true, zoomSnap:0.25, zoomDelta:0.5}).setView([52.2, 5.3], 7);
-  L.tileLayer(`https://{s}.basemaps.cartocdn.com/${dark ? "dark_all" : "rastertiles/voyager"}/{z}/{x}/{y}{r}.png`, {
-    maxZoom:20, subdomains:"abcd",
-    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom:19,
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(m);
   m._layers_ = {mask:null, area:null, pts:L.layerGroup().addTo(m), extra:L.layerGroup().addTo(m), me:L.layerGroup().addTo(m)};
   return m;
