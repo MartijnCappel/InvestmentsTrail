@@ -38,6 +38,7 @@ const pinSVG = (color, inner, ink = "#fff") => `<svg width="32" height="42" view
 const pinNum = n => ink => `<text y="-20" text-anchor="middle" font-family="Red Hat Display,system-ui,sans-serif" font-weight="800" font-size="13" fill="${ink}">${esc(n)}</text>`;
 const pinCheck = ink => `<path d="M-6,-25L-1.5,-20.5L6.5,-29" stroke="${ink}" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
 const pinLock = ink => `<g fill="none" stroke="${ink}" stroke-width="2"><rect x="-5.5" y="-26" width="11" height="8.5" rx="1.5"/><path d="M-3,-26v-2.5a3,3 0 0 1 6,0v2.5"/></g>`;
+const pinStar = ink => `<path d="M0,-34l2.9,6.2 6.8.7-5.1,4.5 1.5,6.6L0,-19.4l-6.1,3.6 1.5-6.6-5.1-4.5 6.8-.7z" fill="${ink}"/>`;
 const pinFlag = ink => `<path d="M-5,-33V-17M-5,-33H6L3,-29L6,-25H-5" stroke="${ink}" stroke-width="2.2" fill="none" stroke-linejoin="round"/>`;
 const pinIcon = (svg, cls = "") => L.divIcon({className:"pinicon " + cls, html:svg, iconSize:[32,42], iconAnchor:[16,42], popupAnchor:[0,-40]});
 
@@ -234,13 +235,15 @@ function stopGeo() { if (geo.watch != null) navigator.geolocation.clearWatch(geo
 const geoFresh = () => geo.lat != null && Date.now() - geo.at < 60000;
 const effDist = p => geoFresh() ? Math.max(0, distM(geo.lat, geo.lng, p.lat, p.lng) - Math.min(geo.acc || 0, 20)) : null;
 const canUnlock = p => { const d = effDist(p); return d != null && d <= (p.radius || cfg().radius || 15); };
+// the one or two places a team can unlock right now: its next stop, or its claimed bonus
+const lockedTargets = () => [...S.points.filter(p => p.is_next && !p.unlocked), ...S.bonuses.filter(b => b.mine && !b.unlocked).map(b => ({...b, bonus:true}))];
 function onGeo() {
   if (ui.screen !== "team" || !S) return;
   drawMe();
   updateGeoChip();
   // arrival notice
-  if (status() === "live") for (const p of S.points) {
-    if (!p.unlocked && canUnlock(p) && !geo.near.has(p.id)) { geo.near.add(p.id); toast(`You've reached point ${p.n} — tap it to unlock`); if (navigator.vibrate) navigator.vibrate(120); drawTeamMarkers(true); }
+  if (status() === "live") for (const p of lockedTargets()) {
+    if (canUnlock(p) && !geo.near.has(p.id)) { geo.near.add(p.id); toast(p.bonus ? "You've reached your bonus location — tap the gold pin" : "You've reached your next stop — tap it to unlock"); if (navigator.vibrate) navigator.vibrate(120); drawTeamMarkers(true); }
     else if (geo.near.has(p.id) && !canUnlock(p)) { geo.near.delete(p.id); drawTeamMarkers(true); }
   }
   if (geoFresh() && Date.now() - geo.lastPing > 45000 && status() === "live") { geo.lastPing = Date.now(); sb.rpc("team_action", {p_code:session.code, p_action:"ping", p:{lat:geo.lat, lng:geo.lng}}).then(() => {}, () => {}); }
@@ -324,17 +327,23 @@ function drawTeamMarkers(force) {
   if (st !== "setup") {
     for (const p of S.points) {
       const s = subFor(tid, p.id), done = s && s.status !== "rejected", near = !p.unlocked && geo.near.has(p.id);
-      marks.push({id:p.id, lat:p.lat, lng:p.lng, svg:pinSVG(KINDS[p.kind].c, done ? pinCheck : p.unlocked ? pinNum(p.n) : pinLock), cls:(done ? "done" : "") + (near ? " near" : ""), r:p.unlocked || done ? 0 : p.radius});
+      marks.push({id:p.id, type:"point", lat:p.lat, lng:p.lng, svg:pinSVG(KINDS[p.kind].c, done ? pinCheck : p.unlocked ? pinNum(p.seq) : pinLock), cls:(done ? "done" : "") + (near ? " near" : ""), r:p.unlocked || done ? 0 : p.radius, z:done ? 0 : 500});
     }
-    if (c.all_done && c.finish) marks.push({id:"finish", lat:c.finish.lat, lng:c.finish.lng, svg:pinSVG(BRAND, pinFlag), cls:"near"});
+    for (const b of (st === "live" ? S.bonuses : [])) {
+      const near = b.mine && !b.unlocked && geo.near.has(b.id);
+      marks.push({id:b.id, type:"bonus", lat:b.lat, lng:b.lng, svg:pinSVG(GOLD, b.mine && b.unlocked ? pinStar : b.mine ? pinLock : pinStar, "#2A2200"), cls:near ? "near" : "", r:b.mine && !b.unlocked ? b.radius : 0, z:800});
+    }
+    if (c.all_done && c.finish) marks.push({id:"finish", type:"finish", lat:c.finish.lat, lng:c.finish.lng, svg:pinSVG(BRAND, pinFlag), cls:"near", z:900});
   }
   const key = JSON.stringify(marks); if (!force && key === tMarkKey) return; tMarkKey = key;
   const g = tmap._layers_.pts; g.clearLayers();
   for (const m of marks) {
     if (m.r) L.circle([m.lat, m.lng], {radius:m.r, color:"#56706B", weight:1, dashArray:"3 4", fill:false, interactive:false}).addTo(g);
-    L.marker([m.lat, m.lng], {icon:pinIcon(m.svg, m.cls), keyboard:true, title:m.id === "finish" ? "Finish" : ""}).on("click", () => m.id === "finish" ? openCompass() : openPoint(m.id)).addTo(g);
+    L.marker([m.lat, m.lng], {icon:pinIcon(m.svg, m.cls), keyboard:true, zIndexOffset:m.z, title:m.type === "finish" ? "Finish" : m.type === "bonus" ? "Bonus task" : ""})
+      .on("click", () => m.type === "finish" ? openCompass() : m.type === "bonus" ? openBonus(m.id) : openPoint(m.id)).addTo(g);
   }
 }
+
 function updateTeam() {
   const tid = S.team_id, t = teamById(tid);
   if (!t) { saveSession(null); render(true); return; }
@@ -343,7 +352,7 @@ function updateTeam() {
   $("#t-name").textContent = t.name;
   $("#t-score").textContent = t.score || 0;
   const un = unreadFor(tid, "team"); $("#t-unread").innerHTML = un ? `<span class="badge">${un}</span>` : "";
-  const total = S.points.length, done = doneCount(tid);
+  const total = c.points_total || 0, done = doneCount(tid);
   patch($("#t-prog"), `<div class="row"><span>Progress</span><span class="num">${done} / ${total}</span></div><div class="bar"><i style="width:${total ? done / total * 100 : 0}%"></i></div>`);
   $("#t-prog").hidden = st !== "live";
   updateGeoChip();
@@ -355,8 +364,8 @@ function updateTeam() {
   const vb = st === "live" ? S.bonuses : [];
   const mine = vb.find(b => b.mine), free = vb.filter(b => !b.mine);
   let bh = "";
-  if (mine) bh = `<div class="bonusbar">${I.star}<div class="txt"><small>Your bonus task · +${mine.value} pts</small><b>${esc(mine.title)}</b></div><button class="btn sm" data-act="t-bonus" data-id="${mine.id}">Open</button></div>`;
-  else if (free.length) { const b = free[0]; bh = `<div class="bonusbar">${I.star}<div class="txt"><small>Bonus task${free.length > 1 ? ` (${free.length})` : ""} · +${b.value} pts · first team to claim it</small><b>${esc(b.title)}</b></div><button class="btn sm" data-act="t-bonus" data-id="${b.id}">View</button></div>`; }
+  if (mine) bh = `<div class="bonusbar">${I.star}<div class="txt"><small>${mine.unlocked ? "Your bonus task · finish it to continue" : "Your bonus task · walk to the gold pin"} · +${mine.value} pts</small><b>${esc(mine.title)}</b></div><button class="btn sm" data-act="t-bonus" data-id="${mine.id}">Open</button></div>`;
+  else if (free.length) { const b = free[0]; bh = `<div class="bonusbar">${I.star}<div class="txt"><small>Bonus task on the map${free.length > 1 ? ` (${free.length})` : ""} · +${b.value} pts · first team to claim it</small><b>${esc(b.title)}</b></div><button class="btn sm" data-act="t-bonus" data-id="${b.id}">View</button></div>`; }
   const bonEl = $("#t-bonus");
   const key = mine ? "m" + mine.id : free.length ? "f" + free.map(b => b.id).join(",") : "";
   if (bonEl.dataset.key !== key) {
@@ -372,12 +381,18 @@ function updateTeam() {
     ov = `<div class="overlay-card"><div class="eyebrow">The hunt is over</div>${w ? `<div class="winner"><span class="eyebrow" style="color:inherit">Winner</span><b>${esc(w.name)}</b><span class="num">${w.score} points</span></div>` : ""}<p style="margin:0">${w && w.id === tid ? "Congratulations — that's you!" : `Your team finished <b>#${myRank}</b> with <b class="num">${t.score}</b> points.`}</p>
       <div class="list" style="text-align:left">${rk.slice(0, 6).map((r, i) => `<div class="item"><span class="rank">${i + 1}</span><div class="main"><b>${esc(r.t.name)}</b></div><b class="num">${r.score}</b></div>`).join("")}</div></div>`;
   } else if (c.all_done && c.finish) ov = `<div class="finishcta"><button class="btn primary" data-act="t-compass">${I.nav} All done — find the finish</button></div>`;
-  else if (!S.points.length) ov = `<div class="overlay-card"><h2>No tasks yet</h2><p class="muted" style="margin:0">The organiser is still placing the points. They'll appear on the map automatically.</p></div>`;
+  else if (!c.points_total) ov = `<div class="overlay-card"><h2>No tasks yet</h2><p class="muted" style="margin:0">The organiser is still placing the points. They'll appear on the map automatically.</p></div>`;
   patch($("#t-over"), ov);
   $(".legend-float").hidden = !!(c.all_done && c.finish) || st !== "live";
   if (ui.modal && ui.modal.onUpdate) ui.modal.onUpdate();
 }
 
+function distanceBlock(t) {
+  const ok = canUnlock(t), raw = geoFresh() ? distM(geo.lat, geo.lng, t.lat, t.lng) : null;
+  return `<div class="distance${ok ? " near" : ""}">${raw == null
+    ? `<span class="muted">${geo.err === "denied" ? "Location is blocked. Allow location access for this site in your browser settings." : "Waiting for your location…"}</span>`
+    : `<b>${fmtDist(raw)}</b><span class="muted">${ok ? "You're here! Unlock the task." : `Get within ${t.radius} m to unlock this task`}</span>`}</div>`;
+}
 function openPoint(id) {
   const tid = S.team_id;
   let photoFile = null, busy = false;
@@ -386,15 +401,11 @@ function openPoint(id) {
     const p = point(); if (!p) { closeSheet(); return; }
     const k = KINDS[p.kind] || KINDS.question;
     const s = subFor(tid, p.id);
-    const head = `<div class="sheet-h"><div class="numpin" style="background:${k.c}"><span>${p.n}</span></div><div class="t"><div class="eyebrow" style="color:${k.c}">${k.label} · ${p.value} pts · ${RESP[p.resp] || ""}</div><h2>${esc(p.title)}</h2></div><button class="btn ghost sm" data-close>Close</button></div>`;
+    const head = `<div class="sheet-h"><div class="numpin" style="background:${k.c}"><span>${p.seq}</span></div><div class="t"><div class="eyebrow" style="color:${k.c}">Stop ${p.seq} of ${cfg().points_total} · ${k.label} · ${p.value} pts · ${RESP[p.resp] || ""}</div><h2>${esc(p.title)}</h2></div><button class="btn ghost sm" data-close>Close</button></div>`;
     if (!p.unlocked) {
-      const d = effDist(p), ok = canUnlock(p), live = status() === "live";
-      const raw = geoFresh() ? distM(geo.lat, geo.lng, p.lat, p.lng) : null;
+      const ok = canUnlock(p), live = status() === "live";
       sh.innerHTML = `${head}
-        <div class="distance${ok ? " near" : ""}" id="pt-dist">
-          ${raw == null ? `<span class="muted">${geo.err === "denied" ? "Location is blocked. Allow location access for this site in your browser settings." : "Waiting for your location…"}</span>`
-          : `<b>${fmtDist(raw)}</b><span class="muted">${ok ? "You're here! Unlock the task." : `Get within ${p.radius} m to unlock this task`}</span>`}
-        </div>
+        <div id="pt-dist">${distanceBlock(p)}</div>
         <div class="actions"><a class="btn" href="${gmaps(p.lat, p.lng)}" target="_blank" rel="noopener">${I.nav} Walk here</a><button class="btn primary" id="pt-unlock" ${ok && live ? "" : "disabled"}>${I.lock} Unlock task</button></div>
         ${!live ? `<p class="hint" style="margin:0">Tasks can be unlocked while the hunt is live.</p>` : ""}`;
       $("[data-close]", sh).onclick = closeSheet;
@@ -403,6 +414,7 @@ function openPoint(id) {
         const r = await act({point_id:p.id, lat:geo.lat, lng:geo.lng, acc:geo.acc}, "unlock");
         if (r.ok) { toast("Unlocked!"); }
         else if (r.reason === "too_far") { toast(`The server measured ${r.dist} m. Move a bit closer and try again.`); b.disabled = false; b.innerHTML = `${I.lock} Unlock task`; }
+        else if (r.reason === "bonus_first") { toast("Finish your bonus task first."); closeSheet(); }
         else if (r.reason) { toast("This task can't be unlocked right now."); b.disabled = false; b.innerHTML = `${I.lock} Unlock task`; }
       };
       return;
@@ -448,31 +460,42 @@ function openBonus(id) {
   const draw = sh => {
     const b = S.bonuses.find(x => x.id === id);
     if (!b) { sh.innerHTML = `<div class="sheet-h"><div class="t"><h2>This bonus task is gone</h2><p class="muted">Another team claimed it first, or the organiser closed it.</p></div><button class="btn ghost sm" data-close>Close</button></div>`; $("[data-close]", sh).onclick = closeSheet; return; }
-    sh.innerHTML = `<div class="sheet-h"><div class="numpin" style="background:${GOLD};color:#2A2200"><span>★</span></div><div class="t"><div class="eyebrow">Bonus task · +${b.value} pts · ${RESP[b.resp]}</div><h2>${esc(b.title)}</h2></div><button class="btn ghost sm" data-close>Close</button></div>
-      ${b.mine ? `<div class="prompt">${esc(b.prompt || "")}</div>
+    const head = `<div class="sheet-h"><div class="numpin" style="background:${GOLD};color:#2A2200"><span>★</span></div><div class="t"><div class="eyebrow">Bonus task · +${b.value} pts · ${RESP[b.resp]}</div><h2>${esc(b.title)}</h2></div><button class="btn ghost sm" data-close>Close</button></div>`;
+    if (!b.mine) {
+      sh.innerHTML = `${head}<p style="margin:0">Only one team can do this task at a time. When you claim it, it disappears for the other teams and <b>your next stop stays hidden until you've finished the bonus</b>. Walk to the gold pin to unlock the instructions.</p>
+        ${geoFresh() ? `<p class="muted" style="margin:0">It's ${fmtDist(distM(geo.lat, geo.lng, b.lat, b.lng))} away.</p>` : ""}
+        <div class="actions"><button class="btn" data-close>Not now</button><button class="btn gold" id="b-claim">${I.star} Claim bonus task</button></div>`;
+    } else if (!b.unlocked) {
+      sh.innerHTML = `${head}<div>${distanceBlock(b)}</div>
+        <div class="actions"><a class="btn" href="${gmaps(b.lat, b.lng)}" target="_blank" rel="noopener">${I.nav} Walk here</a><button class="btn gold" id="b-unlock" ${canUnlock(b) ? "" : "disabled"}>${I.lock} Unlock bonus</button></div>
+        <p class="hint" style="margin:0">Your next stop appears again once you've submitted this bonus task.</p>`;
+    } else {
+      sh.innerHTML = `${head}<div class="prompt">${esc(b.prompt || "")}</div>
         <form class="form" id="bf">${b.resp !== "photo" ? `<label>Your answer<textarea id="b-text" rows="3"></textarea></label>` : ""}${b.resp !== "text" ? `<div class="photo-pick"><label class="btn" for="b-photo">${I.cam} Take or add photo</label><input type="file" id="b-photo" accept="image/*" capture="environment" hidden><span id="b-prev" class="hint">A photo is required</span></div>` : ""}
-        <div class="actions"><button type="button" class="btn danger" id="b-give">Give it up</button><span class="spacer"></span><button class="btn primary" id="b-go">Submit bonus</button></div></form>`
-      : `<p style="margin:0">Only one team can do this task at a time. Claim it to see the instructions — while you work on it, the other teams can't see it.</p><div class="actions"><button class="btn" data-close>Not now</button><button class="btn gold" id="b-claim">${I.star} Claim bonus task</button></div>`}`;
+        <div class="actions"><button class="btn primary" id="b-go">Submit bonus</button></div></form>`;
+    }
     $$("[data-close]", sh).forEach(x => x.onclick = closeSheet);
     const cl = $("#b-claim", sh);
-    if (cl) cl.onclick = async () => { cl.disabled = true; cl.textContent = "Claiming…"; const r = await act({bonus_id:id}, "claim"); if (r.ok) toast("It's yours! The other teams can't see it now."); else { toast("Too late — another team claimed it."); closeSheet(); } };
+    if (cl) cl.onclick = async () => { cl.disabled = true; cl.textContent = "Claiming…"; const r = await act({bonus_id:id}, "claim"); if (r.ok) toast("It's yours! Walk to the gold pin."); else { toast(r.reason === "bonus_first" ? "Finish your current bonus task first." : "Too late — another team claimed it."); closeSheet(); } };
+    const un = $("#b-unlock", sh);
+    if (un) un.onclick = async () => { un.disabled = true; un.textContent = "Checking location…"; const r = await act({bonus_id:id, lat:geo.lat, lng:geo.lng, acc:geo.acc}, "unlock");
+      if (r.ok) toast("Unlocked!"); else { toast(r.reason === "too_far" ? `The server measured ${r.dist} m. Move a bit closer and try again.` : "This bonus can't be unlocked right now."); un.disabled = false; un.innerHTML = `${I.lock} Unlock bonus`; } };
     photoPicker(sh, "b-photo", "b-prev", f => file = f);
-    const give = $("#b-give", sh);
-    if (give) give.onclick = async () => { if (!armed(give, "Tap again to give up")) return; const r = await act({bonus_id:id}, "giveup", "Bonus task released to the other teams"); if (r.ok) closeSheet(); };
     const f = $("#bf", sh);
     if (f) f.onsubmit = async e => {
       e.preventDefault(); const text = ($("#b-text", sh) ? $("#b-text", sh).value : "").trim();
       if (b.resp !== "photo" && !text) return toast("Type your answer first.");
       if (b.resp !== "text" && !file) return toast("Add a photo first.");
       const btn = $("#b-go", sh); btn.disabled = true; btn.textContent = file ? "Uploading photo…" : "Sending…"; busy = true;
-      try { const photo = file ? await uploadPhoto(file) : null; const r = await act({target:"bonus", target_id:id, body:text, photo}, "submit", "Bonus submitted — the organiser will check it."); if (r.ok) { busy = false; file = null; closeSheet(); return; } }
+      try { const photo = file ? await uploadPhoto(file) : null; const r = await act({target:"bonus", target_id:id, body:text, photo}, "submit", "Bonus submitted — on to your next stop!"); if (r.ok) { busy = false; file = null; closeSheet(); return; } }
       catch (err) { toast(err.message); }
       busy = false; btn.disabled = false; btn.textContent = "Submit bonus";
     };
   };
   const keyOf = () => JSON.stringify(S.bonuses.find(x => x.id === id) || null);
   let last = keyOf();
-  openSheet("", draw, {onUpdate: () => { const sh = $(".sheet"); const k = keyOf(); if (!sh || k === last || busy || file) return; last = k; draw(sh); }});
+  openSheet("", draw, {onUpdate: () => { const sh = $(".sheet"); const k = keyOf(); if (!sh || k === last || busy || file) return; const t = $("#b-text", sh); if (t && t.value.trim()) return; last = k; draw(sh); }});
+  ui.modal.onGeo = () => { const b = S.bonuses.find(x => x.id === id); const sh = $(".sheet"); if (b && !(b.mine && b.unlocked) && sh && !busy) draw(sh); };
 }
 
 function openTeamDetails() {
@@ -570,6 +593,7 @@ function renderAdminShell() {
   amap.on("click", e => {
     const {lat, lng} = e.latlng;
     if (ui.mode === "point") { setMode("pan"); openPointEditor(null, {lat, lng}); }
+    else if (ui.mode === "bonus") { setMode("pan"); openBonusEditor(null, {lat, lng}); }
     else if (ui.mode === "finish") { setMode("pan"); act({finish:{lat, lng}}, "config", "Finish point set"); }
     else if (ui.mode === "area") {
       if (!ui.areaFirst) { ui.areaFirst = {lat, lng}; amap._layers_.extra.clearLayers(); L.circleMarker([lat, lng], {radius:6, color:BRAND, fillOpacity:1}).addTo(amap._layers_.extra); renderModes(); }
@@ -582,8 +606,8 @@ function renderAdminShell() {
 function setMode(m) { ui.mode = m; ui.areaFirst = null; if (amap) amap._layers_.extra.clearLayers(); renderModes(); }
 function renderModes() {
   const m = ui.mode;
-  $("#a-modes").innerHTML = [["pan","Browse"],["area","Select area"],["point","Add point"],["finish","Set finish"]].map(([k, l]) => `<button class="btn${m === k ? " on" : ""}" data-act="mode" data-mode="${k}">${l}</button>`).join("");
-  const hints = {area:ui.areaFirst ? "Now tap the opposite corner of the area" : "Tap one corner of the hunt area", point:"Tap the map where the new point should go", finish:"Tap the map where the finish is"};
+  $("#a-modes").innerHTML = [["pan","Browse"],["area","Select area"],["point","Add point"],["bonus","Add bonus"],["finish","Set finish"]].map(([k, l]) => `<button class="btn${m === k ? " on" : ""}" data-act="mode" data-mode="${k}">${l}</button>`).join("");
+  const hints = {area:ui.areaFirst ? "Now tap the opposite corner of the area" : "Tap one corner of the hunt area", point:"Tap the map where the new point should go", bonus:"Tap the map where the bonus task should be", finish:"Tap the map where the finish is"};
   $("#a-hint").innerHTML = hints[m] ? `<div class="maphint">${hints[m]} · <button class="btn sm ghost" style="color:inherit;min-height:24px" data-act="mode" data-mode="pan">Cancel</button></div>` : "";
   if (amap) amap.getContainer().style.cursor = m === "pan" ? "" : "crosshair";
 }
@@ -591,7 +615,7 @@ let aMarkKey = "", dragging = false;
 function drawAdminMarkers() {
   if (dragging) return;
   const c = cfg();
-  const key = JSON.stringify([S.points.map(p => [p.id, p.lat, p.lng, p.kind, p.n, p.radius]), c.finish, c.radius, S.teams.map(t => [t.id, t.name, t.last_lat, t.last_lng, t.last_seen && Math.floor(T(t.last_seen) / 60000)])]);
+  const key = JSON.stringify([S.points.map(p => [p.id, p.lat, p.lng, p.kind, p.n, p.radius]), S.bonuses.map(b => [b.id, b.lat, b.lng, b.radius, b.released, b.claim_team]), c.finish, c.radius, S.teams.map(t => [t.id, t.name, t.last_lat, t.last_lng, t.last_seen && Math.floor(T(t.last_seen) / 60000)])]);
   if (key === aMarkKey) return; aMarkKey = key;
   const g = amap._layers_.pts; g.clearLayers();
   for (const p of S.points) {
@@ -601,6 +625,13 @@ function drawAdminMarkers() {
       .on("dragstart", () => dragging = true)
       .on("dragend", e => { dragging = false; const ll = e.target.getLatLng(); act({id:p.id, lat:ll.lat, lng:ll.lng}, "point_save", "Point moved"); });
     mk.addTo(g);
+  }
+  for (const b of S.bonuses) if (b.lat != null) {
+    L.circle([b.lat, b.lng], {radius:b.radius || c.radius || 15, color:"#B89300", weight:1, fillOpacity:.08, interactive:false}).addTo(g);
+    L.marker([b.lat, b.lng], {icon:pinIcon(pinSVG(GOLD, pinStar, "#2A2200"), b.released ? "" : "done"), draggable:true, title:"Bonus: " + b.title, zIndexOffset:300})
+      .on("click", () => openBonusEditor(b.id))
+      .on("dragstart", () => dragging = true)
+      .on("dragend", e => { dragging = false; const ll = e.target.getLatLng(); act({id:b.id, lat:ll.lat, lng:ll.lng}, "bonus_save", "Bonus moved"); }).addTo(g);
   }
   if (c.finish) L.marker([c.finish.lat, c.finish.lng], {icon:pinIcon(pinSVG(BRAND, pinFlag)), draggable:true, title:"Finish"})
     .on("click", () => { ui.tab = "settings"; renderAdminPanel(true); })
@@ -635,7 +666,7 @@ function renderAdminPanel(force) {
 function ensure(body, id, html) { let el = $("#" + id, body); if (!el) { body.insertAdjacentHTML("beforeend", html); el = $("#" + id, body); } return el; }
 
 function panelPoints(body) {
-  ensure(body, "pp-head", `<div id="pp-head" style="display:grid;gap:10px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><h3 style="flex:1;font-size:18px">Points</h3><button class="btn primary sm" data-act="mode" data-mode="point">+ Add point</button></div><p class="hint" style="margin:0">Tap “Add point”, then tap the map. Drag a pin to move it. Colours: <b style="color:${KINDS.question.c}">question</b>, <b style="color:${KINDS.assignment.c}">assignment</b>, <b style="color:${KINDS.activity.c}">activity</b>. Teams only see a task's instructions once they're within its radius.</p></div>`);
+  ensure(body, "pp-head", `<div id="pp-head" style="display:grid;gap:10px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><h3 style="flex:1;font-size:18px">Points</h3><button class="btn primary sm" data-act="mode" data-mode="point">+ Add point</button></div><p class="hint" style="margin:0">Tap “Add point”, then tap the map. Drag a pin to move it. Colours: <b style="color:${KINDS.question.c}">question</b>, <b style="color:${KINDS.assignment.c}">assignment</b>, <b style="color:${KINDS.activity.c}">activity</b>. Each team walks the points in number order from its own start point (set under Teams) and only ever sees its next stop. Instructions open once the team is within the radius.</p></div>`);
   const list = ensure(body, "pp-list", `<div id="pp-list" class="list"></div>`);
   patch(list, S.points.length ? S.points.map(p => { const k = KINDS[p.kind]; const n = S.subs.filter(s => s.target_id === p.id && s.status !== "rejected").length;
     return `<div class="item click" data-act="edit-point" data-id="${p.id}"><div class="numpin" style="background:${k.c}"><span>${p.n}</span></div><div class="main"><b>${esc(p.title)}</b><small>${k.label} · ${RESP[p.resp]} · ${p.radius || cfg().radius} m · done by ${n}/${S.teams.length}</small></div><b class="num">${p.value}</b></div>`; }).join("")
@@ -686,29 +717,34 @@ function panelTeams(body) {
   const total = S.points.length;
   patch(ensure(body, "tt-list", `<div id="tt-list" class="list"></div>`), S.teams.length ? ranking().map((r, i) => { const t = r.t; const lastSub = Math.max(0, ...S.subs.filter(s => s.team_id === t.id).map(s => T(s.at)));
     const bon = S.bonuses.find(b => b.claim_team === t.id);
+    const pn = id => { const p = S.points.find(x => x.id === id); return p ? `#${p.n} ${esc(p.title)}` : "–"; };
     return `<div class="card teamrow"><div class="top"><span class="rank">${i + 1}</span><b>${esc(t.name)}</b><span class="num" style="font-family:var(--f-display);font-weight:800;font-size:18px">${r.score}</span></div>
       <div class="bar"><i style="width:${total ? r.done / total * 100 : 0}%"></i></div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12.5px" class="muted"><span class="num">${r.done}/${total} tasks</span>·<span>${lastSub ? "last answer " + ago(lastSub) : "no answers yet"}</span>${t.last_seen ? `·<span>seen ${ago(t.last_seen)}</span>` : ""}${bon ? `·<span style="color:var(--warn);font-weight:700">doing bonus “${esc(bon.title)}”</span>` : ""}${t.all_done ? `·<span style="color:var(--ok);font-weight:700">all done</span>` : ""}</div>
+      <div style="font-size:13px">Start: <b>${pn(t.start_eff)}</b>${t.start_point ? "" : ' <span class="muted">(auto)</span>'}${!t.all_done && t.next_point ? ` · Next: <b>${bon ? "bonus first" : pn(t.next_point)}</b>` : ""}</div>
       ${t.members && t.members.length ? `<div style="font-size:13px">${t.members.map(esc).join(", ")}</div>` : ""}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="codepill" data-act="copy" data-text="${esc(t.code)}" title="Copy code">${esc(t.code)}</span><span style="flex:1"></span><button class="btn sm" data-act="chat-team" data-id="${t.id}">${I.chat} Chat</button><button class="btn sm" data-act="edit-team" data-id="${t.id}">Edit</button></div></div>`; }).join("")
     : `<div class="empty"><b>No teams yet</b>Create a team above and hand out its code.</div>`);
 }
 function openTeamEditor(id) {
   const t = teamById(id); if (!t) return;
-  const locked = S.points.filter(p => !isUnlocked(id, p.id));
+  const bon = S.bonuses.find(b => b.claim_team === id);
+  const nxt = S.points.find(p => p.id === t.next_point);
+  const target = bon ? (bon.claim_unlocked ? null : {bonus_id:bon.id, label:`Bonus: ${esc(bon.title)}`}) : nxt && !isUnlocked(id, nxt.id) ? {point_id:nxt.id, label:`#${nxt.n} ${esc(nxt.title)}`} : null;
   openSheet(`<div class="sheet-h"><div class="t"><div class="eyebrow">Team</div><h2>${esc(t.name)}</h2></div><button class="btn ghost sm" data-close>Close</button></div>
   <form class="form" id="te"><label>Team name<input id="te-name" maxlength="40" value="${esc(t.name)}"></label>
   <label>Members<textarea id="te-mem" rows="4" placeholder="One name per line">${esc((t.members || []).join("\n"))}</textarea></label>
+  <label>Start point<select id="te-start"><option value="">Automatic (spread over the points)</option>${S.points.map(p => `<option value="${p.id}"${t.start_point === p.id ? " selected" : ""}>#${p.n} ${esc(p.title)}</option>`).join("")}</select><small>From there the team follows the point numbers in order, wrapping round to #1.</small></label>
   <div class="item"><div class="main"><b class="mono">${esc(t.code)}</b><small>Login code</small></div><span></span><button type="button" class="btn sm" id="te-code">New code</button></div>
   <div class="actions"><button type="button" class="btn danger" id="te-del">Delete team</button><span class="spacer"></span><button class="btn primary">Save</button></div></form>
-  <div class="card"><h3>Unlock a point by hand</h3><p class="hint" style="margin:0">For when the team is at the spot but their GPS won't cooperate.</p>
-  ${locked.length ? `<div class="chatform"><select id="te-pt">${locked.map(p => `<option value="${p.id}">${p.n}. ${esc(p.title)}</option>`).join("")}</select><button type="button" class="btn" id="te-unl">Unlock</button></div>` : `<p class="hint" style="margin:0">This team has unlocked every point.</p>`}</div>`, sh => {
+  <div class="card"><h3>Unlock by hand</h3><p class="hint" style="margin:0">For when the team is at the spot but their GPS won't cooperate.</p>
+  ${target ? `<div class="item"><div class="main"><b>${target.label}</b><small>${bon ? "Claimed bonus task" : "This team's next stop"}</small></div><span></span><button type="button" class="btn" id="te-unl">Unlock</button></div>` : `<p class="hint" style="margin:0">Nothing to unlock right now.</p>`}</div>`, sh => {
     $("[data-close]", sh).onclick = closeSheet;
-    const u = $("#te-unl", sh); if (u) u.onclick = async () => { const r = await act({team_id:id, point_id:$("#te-pt", sh).value}, "unlock", "Point unlocked for " + t.name); if (r.ok) closeSheet(); };
+    const u = $("#te-unl", sh); if (u) u.onclick = async () => { const r = await act({team_id:id, point_id:target.point_id || "", bonus_id:target.bonus_id || ""}, "unlock", "Unlocked for " + t.name); if (r.ok) closeSheet(); };
     $("#te-code", sh).onclick = async e => { if (!armed(e.currentTarget, "Tap again — old code stops working")) return; const r = await act({id}, "team_newcode", r => "New code: " + r.code); if (r.ok) closeSheet(); };
     $("#te-del", sh).onclick = async e => { if (!armed(e.currentTarget, "Tap again to delete team")) return; closeSheet(); act({id}, "team_delete", "Team deleted"); };
     $("#te", sh).onsubmit = async e => { e.preventDefault(); const name = $("#te-name", sh).value.trim(); if (!name) return; const members = $("#te-mem", sh).value.split("\n").map(s => s.trim()).filter(Boolean);
-      const r = await act({id, name, members}, "team_save", "Team saved"); if (r.ok) closeSheet(); };
+      const r = await act({id, name, members, start_point:$("#te-start", sh).value}, "team_save", "Team saved"); if (r.ok) closeSheet(); };
   });
 }
 
@@ -750,24 +786,30 @@ function panelChat(body) {
 }
 
 function panelBonus(body) {
-  ensure(body, "bn-head", `<div id="bn-head" style="display:grid;gap:8px"><div style="display:flex;gap:8px;align-items:center"><h3 style="flex:1;font-size:18px">Bonus tasks</h3><button class="btn primary sm" data-act="bonus-new">+ New bonus</button></div><p class="hint" style="margin:0">When you release a bonus it pops up for every team. The first team to claim it makes it disappear for the others until they finish or give up. Each team can do each bonus once.</p></div>`);
+  ensure(body, "bn-head", `<div id="bn-head" style="display:grid;gap:8px"><div style="display:flex;gap:8px;align-items:center"><h3 style="flex:1;font-size:18px">Bonus tasks</h3><button class="btn primary sm" data-act="mode" data-mode="bonus">+ Add bonus</button></div><p class="hint" style="margin:0">A bonus task has its own spot on the map. When you release it, it pops up for every team as a gold pin. The first team to claim it makes it disappear for the others, and that team must finish it before its next stop appears. Each team can do each bonus once. Drag a gold pin to move it.</p></div>`);
   patch(ensure(body, "bn-list", `<div id="bn-list" class="list"></div>`), S.bonuses.length ? S.bonuses.map(b => { const ct = b.claim_team && teamById(b.claim_team);
-    const state = !b.released ? `<span class="chip">Not released</span>` : ct ? `<span class="chip" style="color:var(--warn)">${esc(ct.name)} is on it</span>` : `<span class="chip" style="color:var(--ok)">Open to claim</span>`;
+    const state = b.lat == null ? `<span class="chip" style="color:var(--bad)">No location</span>` : !b.released ? `<span class="chip">Not released</span>` : ct ? `<span class="chip" style="color:var(--warn)">${esc(ct.name)} is on it</span>` : `<span class="chip" style="color:var(--ok)">Open to claim</span>`;
     return `<div class="card"><div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1;min-width:0"><b style="font-family:var(--f-display);font-size:16px">${esc(b.title)}</b><div class="muted" style="font-size:12.5px">+${b.value} pts · ${RESP[b.resp]} · done by ${(b.done_by || []).length}/${S.teams.length} teams</div></div>${state}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">${b.released ? `<button class="btn sm" data-act="bonus-rel" data-id="${b.id}" data-v="0">Hide</button>` : `<button class="btn sm gold" data-act="bonus-rel" data-id="${b.id}" data-v="1">${I.star} Release now</button>`}${ct ? `<button class="btn sm" data-act="bonus-free" data-id="${b.id}">Free it up</button>` : ""}<span style="flex:1"></span><button class="btn sm" data-act="bonus-edit" data-id="${b.id}">Edit</button></div></div>`; }).join("")
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${b.released ? `<button class="btn sm" data-act="bonus-rel" data-id="${b.id}" data-v="0">Hide</button>` : `<button class="btn sm gold" data-act="bonus-rel" data-id="${b.id}" data-v="1">${I.star} Release now</button>`}${ct ? `<button class="btn sm" data-act="bonus-free" data-id="${b.id}">Take it back</button>` : ""}<span style="flex:1"></span><button class="btn sm" data-act="bonus-edit" data-id="${b.id}">Edit</button></div></div>`; }).join("")
     : `<div class="empty"><b>No bonus tasks yet</b>Create one now and release it during the hunt to shake things up.</div>`);
 }
-function openBonusEditor(id) {
+function openBonusEditor(id, at) {
   const b = id ? S.bonuses.find(x => x.id === id) : null;
+  const ll = b && b.lat != null ? {lat:b.lat, lng:b.lng} : at || null;
   openSheet(`<div class="sheet-h"><div class="t"><div class="eyebrow">Bonus task</div><h2>${b ? "Edit bonus" : "New bonus"}</h2></div><button class="btn ghost sm" data-close>Close</button></div>
-    <form class="form" id="be"><label>Title<input id="be-t" maxlength="80" required value="${esc(b ? b.title : "")}" placeholder="e.g. Human pyramid" autofocus></label>
-    <label>Instructions<textarea id="be-p" rows="4" placeholder="Only shown to the team that claims it">${esc(b ? b.prompt : "")}</textarea></label>
+    <form class="form" id="be"><label>Title (visible on the map)<input id="be-t" maxlength="80" required value="${esc(b ? b.title : "")}" placeholder="e.g. Human pyramid" autofocus></label>
+    <label>Instructions (shown once the team is there)<textarea id="be-p" rows="4" placeholder="What should the team do here?">${esc(b ? b.prompt : "")}</textarea></label>
     <div class="row2"><label>Teams respond with<select id="be-r">${Object.entries(RESP).map(([k, v]) => `<option value="${k}"${(b ? b.resp : "photo") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label><label>Points<input id="be-v" type="number" min="0" step="1" value="${b ? b.value : 25}"></label></div>
+    <div class="row2"><label>Unlock radius (m)<input id="be-rad" type="number" min="5" max="500" step="1" value="${b && b.radius ? b.radius : ""}" placeholder="${cfg().radius || 15}"></label>
+    <label>Location<input id="be-coord" value="${ll ? ll.lat.toFixed(6) + ", " + ll.lng.toFixed(6) : ""}" placeholder="52.3389, 4.8721" inputmode="decimal"></label></div>
     <div class="actions">${b ? `<button type="button" class="btn danger" id="be-del">Delete</button>` : ""}<span class="spacer"></span><button class="btn primary">${b ? "Save" : "Create"}</button></div></form>`, sh => {
     $("[data-close]", sh).onclick = closeSheet;
     if (b) $("#be-del", sh).onclick = e => { if (!armed(e.currentTarget, "Tap again to delete")) return; closeSheet(); act({id:b.id}, "bonus_delete", "Bonus deleted"); };
-    $("#be", sh).onsubmit = async e => { e.preventDefault(); const data = {id:b ? b.id : "", title:$("#be-t", sh).value.trim(), prompt:$("#be-p", sh).value.trim(), resp:$("#be-r", sh).value, value:Math.max(0, Math.round(+$("#be-v", sh).value || 0))};
-      if (!data.title) return; const r = await act(data, "bonus_save", b ? "Bonus saved" : "Bonus created"); if (r.ok) closeSheet(); };
+    $("#be", sh).onsubmit = async e => { e.preventDefault();
+      const m = $("#be-coord", sh).value.match(/(-?\d+(?:\.\d+)?)\s*[,; ]\s*(-?\d+(?:\.\d+)?)/);
+      if (!m) return toast("Enter the location as latitude, longitude — or use “Add bonus” and tap the map.");
+      const data = {id:b ? b.id : "", title:$("#be-t", sh).value.trim(), prompt:$("#be-p", sh).value.trim(), resp:$("#be-r", sh).value, value:Math.max(0, Math.round(+$("#be-v", sh).value || 0)), lat:+m[1], lng:+m[2], radius:$("#be-rad", sh).value.trim()};
+      if (!data.title) return; const r = await act(data, "bonus_save", b ? "Bonus saved" : "Bonus created — release it when you're ready"); if (r.ok) closeSheet(); };
   });
 }
 
@@ -814,7 +856,6 @@ document.addEventListener("click", async e => {
     case "copy": copyText(el.dataset.text); break;
     case "rv-ok": { const v = Math.max(0, Math.round(+(($("#aw-" + id) || {}).value) || 0)); act({id, status:"ok", awarded:v}, "review", `Approved · +${v}`); } break;
     case "rv-no": rejectSub(id); break;
-    case "bonus-new": openBonusEditor(null); break;
     case "bonus-edit": openBonusEditor(id); break;
     case "bonus-rel": act({id, released:el.dataset.v === "1"}, "bonus_release", el.dataset.v === "1" ? "Bonus released to all teams" : "Bonus hidden"); break;
     case "bonus-free": act({id}, "bonus_free", "Bonus is open to all teams again"); break;

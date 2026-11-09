@@ -9,8 +9,11 @@
 --    browser (anon key) cannot read or write them directly.
 --  * Everything goes through four functions that check the code first:
 --      login(code) · get_state(code) · team_action(...) · admin_action(...)
---  * Task instructions are only returned to a team after the server has
---    checked the team was within the radius of that point.
+--  * Each team walks the points in order from its own start point and
+--    only ever receives the next one. Task instructions are only returned
+--    after the server has checked the team was within the radius.
+--  * Bonus tasks have a location. A team that claims one must finish it
+--    before its next point appears; other teams don't see it meanwhile.
 --  * "ticks" is a one-row public counter; the app listens to it via
 --    Realtime and re-fetches its state when it changes.
 -- =====================================================================
@@ -116,6 +119,13 @@ create table if not exists public.ticks (
 );
 insert into public.ticks (id, v) values (1, 0) on conflict do nothing;
 
+-- Added later (safe to re-run): start point per team, location-based bonus tasks
+alter table public.teams   add column if not exists start_point uuid references public.points(id) on delete set null;
+alter table public.bonuses add column if not exists lat float8;
+alter table public.bonuses add column if not exists lng float8;
+alter table public.bonuses add column if not exists radius int;
+alter table public.bonuses add column if not exists claim_unlocked boolean not null default false;
+
 -- First organiser code: ADMIN-2026 (change it in the app under Settings).
 insert into public.settings (id, admin_hash)
 values (1, extensions.crypt('ADMIN2026', extensions.gen_salt('bf')))
@@ -213,11 +223,41 @@ begin
   return null;
 end $$;
 
+-- ---------- route helpers ----------
+-- Each team walks all points in order of their number, starting at its own
+-- start point and wrapping around. Without a chosen start point, teams are
+-- spread over the points in the order they were created.
+create or replace function public._team_seq(p_team uuid) returns table(point_id uuid, pos int)
+language sql stable security definer set search_path = public as $$
+  with pts as (
+    select id, (row_number() over (order by n, created_at) - 1)::int as i, count(*) over ()::int as cnt from points
+  ), st as (
+    select coalesce(
+      (select i from pts where id = (select start_point from teams where id = p_team)),
+      (select (x.rn % greatest((select count(*) from points), 1))::int
+         from (select id, (row_number() over (order by created_at) - 1) rn from teams) x where x.id = p_team),
+      0) as s
+  )
+  select pts.id, ((pts.i - st.s + pts.cnt) % pts.cnt)::int from pts, st
+$$;
+
+create or replace function public._next_point(p_team uuid) returns uuid
+language sql stable security definer set search_path = public as $$
+  select q.point_id from _team_seq(p_team) q
+  where not exists (select 1 from subs s where s.team_id = p_team and s.target_id = q.point_id and s.status <> 'rejected')
+  order by q.pos limit 1
+$$;
+
+create or replace function public._active_bonus(p_team uuid) returns uuid
+language sql stable security definer set search_path = public as $$
+  select id from bonuses where claim_team = p_team limit 1
+$$;
+
 -- ---------- state ----------
 create or replace function public.get_state(p_code text) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare
-  s settings; tid uuid; adm boolean; done boolean;
+  s settings; tid uuid; adm boolean; done boolean; nxt uuid; act uuid;
   res jsonb;
 begin
   select * into s from settings where id = 1;
@@ -226,46 +266,56 @@ begin
   if not adm and tid is null then return null; end if;
 
   if adm then
-    res := jsonb_build_object(
+    return jsonb_build_object(
       'role', 'admin',
       'config', to_jsonb(s) - 'admin_hash',
       'points', coalesce((select jsonb_agg(to_jsonb(p) order by p.n) from points p), '[]'),
       'bonuses', coalesce((select jsonb_agg(to_jsonb(b) order by b.created_at) from bonuses b), '[]'),
-      'teams', coalesce((select jsonb_agg(to_jsonb(t) || jsonb_build_object('score', _score(t.id), 'all_done', _all_done(t.id)) order by t.created_at) from teams t), '[]'),
+      'teams', coalesce((select jsonb_agg(to_jsonb(t) || jsonb_build_object(
+          'score', _score(t.id), 'all_done', _all_done(t.id), 'next_point', _next_point(t.id),
+          'start_eff', (select point_id from _team_seq(t.id) where pos = 0)) order by t.created_at) from teams t), '[]'),
       'unlocks', coalesce((select jsonb_agg(to_jsonb(u)) from unlocks u), '[]'),
       'subs', coalesce((select jsonb_agg(to_jsonb(x) order by x.at) from subs x), '[]'),
       'msgs', coalesce((select jsonb_agg(to_jsonb(m) order by m.id) from msgs m), '[]'),
       'reads', coalesce((select jsonb_agg(to_jsonb(r)) from reads r), '[]')
     );
-    return res;
   end if;
 
   done := _all_done(tid);
+  act := case when s.status = 'live' then _active_bonus(tid) end;
+  nxt := case when act is null then _next_point(tid) end;
   res := jsonb_build_object(
     'role', 'team',
     'team_id', tid,
     'config', jsonb_build_object(
       'title', s.title, 'organizer', s.organizer, 'status', s.status, 'bbox', s.bbox,
       'radius', s.radius, 'winner_id', case when s.status = 'ended' then s.winner_id end,
-      'bg_url', s.bg_url, 'bg_opacity', s.bg_opacity,
       'finish', case when done or s.status = 'ended' then s.finish end,
       'finish_title', case when done then s.finish_title end,
       'finish_text', case when done then s.finish_text end,
-      'all_done', done),
+      'all_done', done, 'points_total', (select count(*) from points),
+      'bonus_active', act is not null),
+    -- only points already done, plus the single next point on this team's route
     'points', case when s.status = 'setup' then '[]'::jsonb else coalesce((
       select jsonb_agg(jsonb_build_object(
-        'id', p.id, 'n', p.n, 'kind', p.kind, 'title', p.title, 'resp', p.resp, 'value', p.value,
+        'id', p.id, 'seq', q.pos + 1, 'kind', p.kind, 'title', p.title, 'resp', p.resp, 'value', p.value,
         'lat', p.lat, 'lng', p.lng, 'radius', coalesce(p.radius, s.radius),
+        'is_next', p.id = nxt,
         'unlocked', u.point_id is not null,
-        'prompt', case when u.point_id is not null then p.prompt end) order by p.n)
-      from points p left join unlocks u on u.point_id = p.id and u.team_id = tid), '[]') end,
+        'prompt', case when u.point_id is not null then p.prompt end) order by q.pos)
+      from _team_seq(tid) q join points p on p.id = q.point_id
+      left join unlocks u on u.point_id = p.id and u.team_id = tid
+      where p.id = nxt or exists (select 1 from subs x where x.team_id = tid and x.target_id = p.id and x.status <> 'rejected')), '[]') end,
     'bonuses', case when s.status <> 'live' then '[]'::jsonb else coalesce((
       select jsonb_agg(jsonb_build_object(
         'id', b.id, 'title', b.title, 'resp', b.resp, 'value', b.value,
-        'mine', coalesce(b.claim_team = tid, false),
-        'prompt', case when b.claim_team = tid then b.prompt end) order by b.created_at)
+        'lat', b.lat, 'lng', b.lng, 'radius', coalesce(b.radius, s.radius),
+        'mine', b.claim_team is not distinct from tid,
+        'unlocked', b.claim_team is not distinct from tid and b.claim_unlocked,
+        'prompt', case when b.claim_team = tid and b.claim_unlocked then b.prompt end) order by b.created_at)
       from bonuses b
-      where b.released and not (tid = any(b.done_by)) and (b.claim_team is null or b.claim_team = tid)), '[]') end,
+      where b.released and b.lat is not null and not (tid = any(b.done_by))
+        and (case when act is not null then b.id = act else b.claim_team is null end)), '[]') end,
     'teams', coalesce((
       select jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name, 'score', _score(t.id),
         'members', case when t.id = tid then to_jsonb(t.members) end) order by t.created_at)
@@ -281,12 +331,14 @@ end $$;
 create or replace function public.team_action(p_code text, p_action text, p jsonb default '{}') returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
-  tid uuid; s settings; pt points; d float8; eff float8; rad int; ok boolean;
-  tgt uuid; st text; aw int; alts text[]; prev subs; b bonuses;
+  tid uuid; s settings; pt points; d float8; eff float8; rad int;
+  tgt uuid; st text; aw int; alts text[]; prev subs; b bonuses; act uuid;
+  plat float8; plng float8;
 begin
   tid := _team(p_code);
   if tid is null then raise exception 'not_logged_in'; end if;
   select * into s from settings where id = 1;
+  act := _active_bonus(tid);
 
   if p_action = 'ping' then
     update teams set last_lat = (p->>'lat')::float8, last_lng = (p->>'lng')::float8, last_seen = now() where id = tid;
@@ -310,15 +362,25 @@ begin
 
   elsif p_action = 'unlock' then
     if s.status <> 'live' then return jsonb_build_object('ok', false, 'reason', 'not_live'); end if;
-    select * into pt from points where id = (p->>'point_id')::uuid;
-    if not found then return jsonb_build_object('ok', false, 'reason', 'no_point'); end if;
-    rad := coalesce(pt.radius, s.radius);
-    d := _dist((p->>'lat')::float8, (p->>'lng')::float8, pt.lat, pt.lng);
+    plat := (p->>'lat')::float8; plng := (p->>'lng')::float8;
+    update teams set last_lat = plat, last_lng = plng, last_seen = now() where id = tid;
+    if nullif(p->>'bonus_id', '') is not null then
+      select * into b from bonuses where id = (p->>'bonus_id')::uuid and claim_team = tid;
+      if not found then return jsonb_build_object('ok', false, 'reason', 'not_claimed'); end if;
+      rad := coalesce(b.radius, s.radius);
+      d := _dist(plat, plng, b.lat, b.lng);
+    else
+      if act is not null then return jsonb_build_object('ok', false, 'reason', 'bonus_first'); end if;
+      select * into pt from points where id = (p->>'point_id')::uuid;
+      if not found or pt.id is distinct from _next_point(tid) then return jsonb_build_object('ok', false, 'reason', 'not_next'); end if;
+      rad := coalesce(pt.radius, s.radius);
+      d := _dist(plat, plng, pt.lat, pt.lng);
+    end if;
     -- allow for GPS uncertainty, but never more than 20 m extra
     eff := d - least(greatest(coalesce((p->>'acc')::float8, 0), 0), 20);
-    update teams set last_lat = (p->>'lat')::float8, last_lng = (p->>'lng')::float8, last_seen = now() where id = tid;
     if eff > rad then return jsonb_build_object('ok', false, 'reason', 'too_far', 'dist', round(d)); end if;
-    insert into unlocks (team_id, point_id) values (tid, pt.id) on conflict do nothing;
+    if b.id is not null then update bonuses set claim_unlocked = true where id = b.id;
+    else insert into unlocks (team_id, point_id) values (tid, pt.id) on conflict do nothing; end if;
 
   elsif p_action = 'submit' then
     if s.status <> 'live' then return jsonb_build_object('ok', false, 'reason', 'not_live'); end if;
@@ -327,8 +389,9 @@ begin
     if found and prev.status <> 'rejected' then return jsonb_build_object('ok', false, 'reason', 'already'); end if;
 
     if p->>'target' = 'point' then
+      if act is not null then return jsonb_build_object('ok', false, 'reason', 'bonus_first'); end if;
       select * into pt from points where id = tgt;
-      if not found then return jsonb_build_object('ok', false, 'reason', 'no_point'); end if;
+      if not found or tgt is distinct from _next_point(tid) then return jsonb_build_object('ok', false, 'reason', 'not_next'); end if;
       if not exists (select 1 from unlocks where team_id = tid and point_id = tgt) then
         return jsonb_build_object('ok', false, 'reason', 'locked'); end if;
       st := 'review'; aw := 0;
@@ -346,23 +409,21 @@ begin
     elsif p->>'target' = 'bonus' then
       select * into b from bonuses where id = tgt;
       if not found or b.claim_team is distinct from tid then return jsonb_build_object('ok', false, 'reason', 'not_claimed'); end if;
+      if not b.claim_unlocked then return jsonb_build_object('ok', false, 'reason', 'locked'); end if;
       insert into subs (team_id, target, target_id, body, photo, status, awarded, note, at)
       values (tid, 'bonus', tgt, left(coalesce(p->>'body', ''), 4000), p->>'photo', 'review', 0, '', now())
       on conflict (team_id, target_id) do update set body = excluded.body, photo = excluded.photo,
         status = 'review', awarded = 0, note = '', at = now();
-      update bonuses set claim_team = null, claim_at = null,
+      update bonuses set claim_team = null, claim_at = null, claim_unlocked = false,
         done_by = (select array_agg(distinct x) from unnest(done_by || tid) x) where id = tgt;
     end if;
 
   elsif p_action = 'claim' then
     if s.status <> 'live' then return jsonb_build_object('ok', false, 'reason', 'not_live'); end if;
-    update bonuses set claim_team = tid, claim_at = now()
-     where id = (p->>'bonus_id')::uuid and released and claim_team is null and not (tid = any(done_by));
-    ok := found;
-    if not ok then return jsonb_build_object('ok', false, 'reason', 'taken'); end if;
-
-  elsif p_action = 'giveup' then
-    update bonuses set claim_team = null, claim_at = null where id = (p->>'bonus_id')::uuid and claim_team = tid;
+    if act is not null then return jsonb_build_object('ok', false, 'reason', 'bonus_first'); end if;
+    update bonuses set claim_team = tid, claim_at = now(), claim_unlocked = false
+     where id = (p->>'bonus_id')::uuid and released and lat is not null and claim_team is null and not (tid = any(done_by));
+    if not found then return jsonb_build_object('ok', false, 'reason', 'taken'); end if;
 
   else
     raise exception 'unknown_action';
@@ -412,7 +473,7 @@ begin
   elsif p_action = 'reset' then
     -- clears all progress (answers, unlocks, chat) but keeps teams, points and bonus tasks
     delete from subs where true; delete from unlocks where true; delete from msgs where true; delete from reads where true;
-    update bonuses set claim_team = null, claim_at = null, done_by = '{}', released = false where true;
+    update bonuses set claim_team = null, claim_at = null, claim_unlocked = false, done_by = '{}', released = false where true;
     update teams set last_lat = null, last_lng = null, last_seen = null where true;
     update settings set status = 'setup', winner_id = null where id = 1;
 
@@ -451,7 +512,8 @@ begin
     end if;
     update teams set
       name = coalesce(nullif(trim(p->>'name'), ''), name),
-      members = case when p ? 'members' then coalesce((select array_agg(trim(x)) from jsonb_array_elements_text(p->'members') x where trim(x) <> ''), '{}') else members end
+      members = case when p ? 'members' then coalesce((select array_agg(trim(x)) from jsonb_array_elements_text(p->'members') x where trim(x) <> ''), '{}') else members end,
+      start_point = case when p ? 'start_point' then nullif(p->>'start_point', '')::uuid else start_point end
     where id = (p->>'id')::uuid;
 
   elsif p_action = 'team_newcode' then
@@ -464,8 +526,12 @@ begin
     delete from teams where id = (p->>'id')::uuid;
 
   elsif p_action = 'unlock' then
-    insert into unlocks (team_id, point_id, manual) values ((p->>'team_id')::uuid, (p->>'point_id')::uuid, true)
-    on conflict do nothing;
+    if nullif(p->>'bonus_id', '') is not null then
+      update bonuses set claim_unlocked = true where id = (p->>'bonus_id')::uuid and claim_team = (p->>'team_id')::uuid;
+    else
+      insert into unlocks (team_id, point_id, manual) values ((p->>'team_id')::uuid, (p->>'point_id')::uuid, true)
+      on conflict do nothing;
+    end if;
 
   elsif p_action = 'review' then
     update subs set status = p->>'status',
@@ -475,11 +541,14 @@ begin
 
   elsif p_action = 'bonus_save' then
     if nullif(p->>'id', '') is null then
-      insert into bonuses (title, prompt, resp, value)
-      values (p->>'title', coalesce(p->>'prompt', ''), coalesce(p->>'resp', 'photo'), coalesce((p->>'value')::int, 25));
+      insert into bonuses (title, prompt, resp, value, lat, lng, radius)
+      values (p->>'title', coalesce(p->>'prompt', ''), coalesce(p->>'resp', 'photo'), coalesce((p->>'value')::int, 25),
+              (p->>'lat')::float8, (p->>'lng')::float8, nullif(p->>'radius', '')::int);
     else
       update bonuses set title = coalesce(p->>'title', title), prompt = coalesce(p->>'prompt', prompt),
-        resp = coalesce(p->>'resp', resp), value = coalesce((p->>'value')::int, value)
+        resp = coalesce(p->>'resp', resp), value = coalesce((p->>'value')::int, value),
+        lat = coalesce((p->>'lat')::float8, lat), lng = coalesce((p->>'lng')::float8, lng),
+        radius = case when p ? 'radius' then nullif(p->>'radius', '')::int else radius end
       where id = (p->>'id')::uuid;
     end if;
   elsif p_action = 'bonus_delete' then
@@ -488,7 +557,7 @@ begin
   elsif p_action = 'bonus_release' then
     update bonuses set released = coalesce((p->>'released')::boolean, true) where id = (p->>'id')::uuid;
   elsif p_action = 'bonus_free' then
-    update bonuses set claim_team = null, claim_at = null where id = (p->>'id')::uuid;
+    update bonuses set claim_team = null, claim_at = null, claim_unlocked = false where id = (p->>'id')::uuid;
 
   elsif p_action = 'msg' then
     if coalesce(trim(p->>'body'), '') = '' then return '{"ok":false}'; end if;
@@ -508,7 +577,8 @@ end $$;
 
 -- ---------- who may call what ----------
 revoke all on function public._norm(text), public._is_admin(text), public._team(text), public._bump(),
-  public._dist(float8, float8, float8, float8), public._new_code(), public._score(uuid), public._all_done(uuid)
+  public._dist(float8, float8, float8, float8), public._new_code(), public._score(uuid), public._all_done(uuid),
+  public._team_seq(uuid), public._next_point(uuid), public._active_bonus(uuid)
   from public, anon, authenticated;
 grant execute on function public._norm(text) to anon, authenticated;
 grant execute on function public.login(text), public.get_state(text),
