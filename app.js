@@ -786,11 +786,12 @@ function panelChat(body) {
 }
 
 function panelBonus(body) {
-  ensure(body, "bn-head", `<div id="bn-head" style="display:grid;gap:8px"><div style="display:flex;gap:8px;align-items:center"><h3 style="flex:1;font-size:18px">Bonus tasks</h3><button class="btn primary sm" data-act="mode" data-mode="bonus">+ Add bonus</button></div><p class="hint" style="margin:0">A bonus task has its own spot on the map. When you release it, it pops up for every team as a gold pin. The first team to claim it makes it disappear for the others, and that team must finish it before its next stop appears. Each team can do each bonus once. Drag a gold pin to move it.</p></div>`);
+  ensure(body, "bn-head", `<div id="bn-head" style="display:grid;gap:8px"><div style="display:flex;gap:8px;align-items:center"><h3 style="flex:1;font-size:18px">Bonus tasks</h3><button class="btn primary sm" data-act="mode" data-mode="bonus">+ Add bonus</button></div><p class="hint" style="margin:0">A bonus task has its own spot on the map. When you offer it, it pops up as a gold pin for every team that hasn't done it yet. The first team to claim it makes it disappear for the others, and that team must finish it before its next stop appears. Once that team has handed it in, the bonus closes. Offer it again for a new round; each team can do it once. Drag a gold pin to move it.</p></div>`);
   patch(ensure(body, "bn-list", `<div id="bn-list" class="list"></div>`), S.bonuses.length ? S.bonuses.map(b => { const ct = b.claim_team && teamById(b.claim_team);
-    const state = b.lat == null ? `<span class="chip" style="color:var(--bad)">No location</span>` : !b.released ? `<span class="chip">Not released</span>` : ct ? `<span class="chip" style="color:var(--warn)">${esc(ct.name)} is on it</span>` : `<span class="chip" style="color:var(--ok)">Open to claim</span>`;
-    return `<div class="card"><div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1;min-width:0"><b style="font-family:var(--f-display);font-size:16px">${esc(b.title)}</b><div class="muted" style="font-size:12.5px">+${b.value} pts · ${RESP[b.resp]} · done by ${(b.done_by || []).length}/${S.teams.length} teams</div></div>${state}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">${b.released ? `<button class="btn sm" data-act="bonus-rel" data-id="${b.id}" data-v="0">Hide</button>` : `<button class="btn sm gold" data-act="bonus-rel" data-id="${b.id}" data-v="1">${I.star} Release now</button>`}${ct ? `<button class="btn sm" data-act="bonus-free" data-id="${b.id}">Take it back</button>` : ""}<span style="flex:1"></span><button class="btn sm" data-act="bonus-edit" data-id="${b.id}">Edit</button></div></div>`; }).join("")
+    const doneN = (b.done_by || []).length, left = S.teams.length - doneN;
+    const state = b.lat == null ? `<span class="chip" style="color:var(--bad)">No location</span>` : !b.released ? `<span class="chip">${doneN ? (left > 0 ? "Closed" : "Done by every team") : "Not offered yet"}</span>` : ct ? `<span class="chip" style="color:var(--warn)">${esc(ct.name)} is on it</span>` : `<span class="chip" style="color:var(--ok)">Open to claim</span>`;
+    return `<div class="card"><div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1;min-width:0"><b style="font-family:var(--f-display);font-size:16px">${esc(b.title)}</b><div class="muted" style="font-size:12.5px">+${b.value} pts · ${RESP[b.resp]} · done by ${doneN}/${S.teams.length} teams${doneN ? ": " + b.done_by.map(id => esc((teamById(id) || {}).name || "?")).join(", ") : ""}</div></div>${state}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${b.released ? `<button class="btn sm" data-act="bonus-rel" data-id="${b.id}" data-v="0">Hide</button>` : (left > 0 || !S.teams.length ? `<button class="btn sm gold" data-act="bonus-rel" data-id="${b.id}" data-v="1">${I.star} ${doneN ? "Offer again" : "Offer now"}</button>` : "")}${ct ? `<button class="btn sm" data-act="bonus-free" data-id="${b.id}">Take it back</button>` : ""}<span style="flex:1"></span><button class="btn sm" data-act="bonus-edit" data-id="${b.id}">Edit</button></div></div>`; }).join("")
     : `<div class="empty"><b>No bonus tasks yet</b>Create one now and release it during the hunt to shake things up.</div>`);
 }
 function openBonusEditor(id, at) {
@@ -857,7 +858,7 @@ document.addEventListener("click", async e => {
     case "rv-ok": { const v = Math.max(0, Math.round(+(($("#aw-" + id) || {}).value) || 0)); act({id, status:"ok", awarded:v}, "review", `Approved · +${v}`); } break;
     case "rv-no": rejectSub(id); break;
     case "bonus-edit": openBonusEditor(id); break;
-    case "bonus-rel": act({id, released:el.dataset.v === "1"}, "bonus_release", el.dataset.v === "1" ? "Bonus released to all teams" : "Bonus hidden"); break;
+    case "bonus-rel": act({id, released:el.dataset.v === "1"}, "bonus_release", el.dataset.v === "1" ? "Bonus offered to the teams that haven't done it" : "Bonus hidden"); break;
     case "bonus-free": act({id}, "bonus_free", "Bonus is open to all teams again"); break;
   }
 });

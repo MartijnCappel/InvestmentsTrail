@@ -39,7 +39,7 @@ De anon key is bedoeld voor browsers en mag publiek staan. Zet hier **nooit** de
 | Startpunt per team | *Teams → Edit → Start point*. Het team volgt daarna de puntnummers op volgorde en gaat na het laatste nummer verder bij #1. Kies je niets, dan worden de teams automatisch over de punten verdeeld |
 | GPS werkt niet bij een team | *Teams → Edit → Unlock a point by hand* |
 | Antwoorden en foto's | Tab *Review*: goedkeuren met punten, of afwijzen met een notitie |
-| Bonusopdracht | *Add bonus* en tik op de kaart (gouden pin). Met *Release now* verschijnt de bonus bij alle teams. Het eerste team dat claimt, krijgt hem: voor de andere teams verdwijnt hij, en het team zelf ziet zijn volgende punt pas weer als de bonus is ingeleverd. De opdracht gaat open binnen de straal van de gouden pin. Met *Take it back* haal je een bonus terug van een team |
+| Bonusopdracht | *Add bonus* en tik op de kaart (gouden pin). Met *Offer now* verschijnt de bonus bij alle teams die hem nog niet gedaan hebben. Het eerste team dat claimt, krijgt hem: voor de andere teams verdwijnt hij, en het team zelf ziet zijn volgende punt pas weer als de bonus is ingeleverd. Daarna sluit de bonus; met *Offer again* start je een nieuwe ronde voor de teams die hem nog niet deden. De opdracht gaat open binnen de straal van de gouden pin. Met *Take it back* haal je een bonus terug van een team |
 | Finish | *Set finish*. Een team ziet de finish met een kompas pas als al zijn opdrachten gedaan zijn |
 | Einde | *End & pick winner*. De winnaar verschijnt bij alle teams |
 | Na een testrondje | *Settings → Clear all progress* (teams en punten blijven staan) |

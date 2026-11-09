@@ -14,6 +14,8 @@
 --    after the server has checked the team was within the radius.
 --  * Bonus tasks have a location. A team that claims one must finish it
 --    before its next point appears; other teams don't see it meanwhile.
+--    After one team finishes it the bonus closes; the organiser can offer
+--    it again to the teams that haven't done it yet.
 --  * "ticks" is a one-row public counter; the app listens to it via
 --    Realtime and re-fetches its state when it changes.
 -- =====================================================================
@@ -414,7 +416,8 @@ begin
       values (tid, 'bonus', tgt, left(coalesce(p->>'body', ''), 4000), p->>'photo', 'review', 0, '', now())
       on conflict (team_id, target_id) do update set body = excluded.body, photo = excluded.photo,
         status = 'review', awarded = 0, note = '', at = now();
-      update bonuses set claim_team = null, claim_at = null, claim_unlocked = false,
+      -- one round = one team: the bonus closes until the organiser offers it again
+      update bonuses set claim_team = null, claim_at = null, claim_unlocked = false, released = false,
         done_by = (select array_agg(distinct x) from unnest(done_by || tid) x) where id = tgt;
     end if;
 
