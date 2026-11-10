@@ -32,6 +32,7 @@ const I = {
   fit:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
   me:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>',
   star:'<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7L12 17.3 5.8 21l1.6-7L2 9.2l7.1-.6z"/></svg>',
+  info:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9.5"/><path d="M12 11v6"/><circle cx="12" cy="7.5" r=".6" fill="currentColor"/></svg>',
   lock:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
 };
 const pinSVG = (color, inner, ink = "#fff") => `<svg width="32" height="42" viewBox="-16 -40 32 42"><path d="M0,0C-3,-7 -14,-12 -14,-25A14,14 0 1 1 14,-25C14,-12 3,-7 0,0Z" fill="${color}" stroke="#fff" stroke-width="2.2"/>${inner(ink)}</svg>`;
@@ -263,6 +264,7 @@ function renderLogin(err = "") {
       <div class="err" role="alert">${esc(err)}</div>
       <button class="btn primary big" id="login-go">Start</button>
     </form>
+    <button type="button" class="btn ghost" data-act="info" style="justify-self:start;padding-left:0">${I.info} How the hunt works</button>
     <div class="legend"><span class="chip"><i class="dot" style="background:${KINDS.question.c}"></i>Question</span><span class="chip"><i class="dot" style="background:${KINDS.assignment.c}"></i>Assignment</span><span class="chip"><i class="dot" style="background:${KINDS.activity.c}"></i>Activity</span><span class="chip"><i class="dot" style="background:${GOLD}"></i>Bonus</span></div>
   </div></div>`;
   const inp = $("#code");
@@ -288,6 +290,7 @@ function renderTeamShell() {
     <header class="topbar">
       <div class="ttl"><div class="eyebrow" id="t-hunt"></div><h2 id="t-name"></h2></div>
       <div class="score"><b id="t-score">0</b><span>points</span></div>
+      <button class="iconbtn" data-act="info" aria-label="How the hunt works">${I.info}</button>
       <button class="iconbtn" data-act="t-chat" aria-label="Chat with the organiser">${I.chat}<span id="t-unread"></span></button>
       <button class="iconbtn" data-act="t-team" aria-label="Team details">${I.team}</button>
     </header>
@@ -496,6 +499,40 @@ function openBonus(id) {
   let last = keyOf();
   openSheet("", draw, {onUpdate: () => { const sh = $(".sheet"); const k = keyOf(); if (!sh || k === last || busy || file) return; const t = $("#b-text", sh); if (t && t.value.trim()) return; last = k; draw(sh); }});
   ui.modal.onGeo = () => { const b = S.bonuses.find(x => x.id === id); const sh = $(".sheet"); if (b && !(b.mine && b.unlocked) && sh && !busy) draw(sh); };
+}
+
+function openInfo() {
+  const c = S && S.config || {}, r = c.radius || 15;
+  const dot = col => `<i class="dot" style="background:${col}"></i>`;
+  const sec = (title, body) => `<section class="info-sec"><h3>${title}</h3>${body}</section>`;
+  openSheet(`<div class="sheet-h"><div class="t"><div class="eyebrow">${esc(c.title || "The Investment Trail")}</div><h2>How the hunt works</h2></div><button class="btn ghost sm" data-close>Close</button></div>
+    <div class="info">
+    ${sec("The idea", `<p>Your team walks a route past a series of stops on the map. At every stop there's a task. Complete them all, collect as many points as you can, and finish at the end point. The team with the most points wins.</p>`)}
+    ${sec("Before you start", `<ul>
+      <li>Allow <b>location access</b> when your browser asks. The map needs it to unlock tasks.</li>
+      <li>Tap ${I.team} at the top to set your <b>team name</b> and add your <b>team members</b>.</li>
+      <li>Keep this page open on one phone per team. Your code logs you back in if you close it.</li></ul>`)}
+    ${sec("Your route", `<ul>
+      <li>You only ever see your <b>next stop</b>. Each team starts somewhere different, so don't follow the others.</li>
+      <li>The blue dot is you. Tap ${I.me} to centre the map on your location, and use <b>Walk here</b> to open directions.</li>
+      <li>Stops are locked ${I.lock} until you're within <b>${r} metres</b>. Tap the pin and press <b>Unlock task</b> when you're there.</li>
+      <li>Answer or upload a photo, then press <b>Submit</b>. Your next stop appears straight away.</li></ul>`)}
+    ${sec("What the colours mean", `<ul class="legend-list">
+      <li>${dot(KINDS.question.c)}<span><b>Question</b> — type in the answer.</span></li>
+      <li>${dot(KINDS.assignment.c)}<span><b>Assignment</b> — do something and show it, usually with a photo.</span></li>
+      <li>${dot(KINDS.activity.c)}<span><b>Activity</b> — a team challenge on the spot.</span></li>
+      <li>${dot(GOLD)}<span><b>Bonus task</b> — extra points, see below.</span></li>
+      <li><span style="color:var(--ok);font-weight:800;width:10px;text-align:center">✓</span><span>A faded pin with a tick is a stop you've already done.</span></li></ul>`)}
+    ${sec("Points", `<p>Each task shows how many points it's worth. Some answers are checked automatically and score straight away; others are checked by the organiser, so your score can go up a little later. If an answer isn't accepted you'll see why and can try again.</p>`)}
+    ${sec("Bonus tasks", `<ul>
+      <li>From time to time a <b>yellow bar</b> appears at the top and a gold pin shows up on the map.</li>
+      <li>Only <b>one team at a time</b> can do a bonus. The first team to claim it gets it, and it disappears for everyone else.</li>
+      <li>Once you claim a bonus you <b>must finish it first</b>: your next stop stays hidden until you've handed it in.</li>
+      <li>Walk to the gold pin to unlock the bonus instructions. Each team can do each bonus only once.</li></ul>`)}
+    ${sec("Questions?", `<p>Tap ${I.chat} at the top to chat with the organiser. A red number means you have a new message.</p>`)}
+    ${sec("The finish", `<p>When every stop is done, a <b>compass</b> points you to the finish. Tap <b>Turn with my phone</b> to let the arrow follow the direction you're facing. The winner is announced when the organiser ends the hunt.</p>`)}
+    <p class="hint" style="margin:0">Tip: GPS can be a few metres off between tall buildings. If a stop won't unlock while you're clearly there, message the organiser.</p>
+    </div>`, sh => { $("[data-close]", sh).onclick = closeSheet; });
 }
 
 function openTeamDetails() {
@@ -844,6 +881,7 @@ document.addEventListener("click", async e => {
     case "zout": map.zoomOut(); break;
     case "zfit": fitArea(map); break;
     case "locate": if (!geoFresh()) { toast(geo.err === "denied" ? "Location is blocked. Allow it in your browser settings." : "Still finding your location…"); break; } ui.follow = true; el.classList.add("on"); tmap.setView([geo.lat, geo.lng], Math.max(tmap.getZoom(), 17)); break;
+    case "info": openInfo(); break;
     case "t-chat": openTeamChat(); break;
     case "t-team": openTeamDetails(); break;
     case "t-bonus": openBonus(id); break;

@@ -215,3 +215,15 @@ img.ph{border-radius:10px;border:1px solid var(--line);object-fit:cover;backgrou
 }
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--surface);padding:10px 16px;border-radius:12px;font-weight:600;z-index:3000;box-shadow:var(--shadow);max-width:calc(100% - 32px);animation:up .2s}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* info sheet */
+.info{display:grid;gap:18px}
+.info-sec{display:grid;gap:6px}
+.info-sec h3{font-size:16px}
+.info-sec p{margin:0}
+.info-sec ul{margin:0;padding-left:20px;display:grid;gap:6px}
+.info-sec .icon{width:15px;height:15px;vertical-align:-2px;color:var(--brand)}
+.info-sec ul.legend-list{list-style:none;padding:0}
+.legend-list li{display:flex;gap:10px;align-items:baseline}
+.legend-list .dot{transform:translateY(1px)}
+@media (max-width:400px){.topbar{gap:6px}.topbar .iconbtn{width:38px;height:38px}}
