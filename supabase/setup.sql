@@ -158,6 +158,8 @@ create table if not exists public.hunts (
   created_at   timestamptz not null default now()
 );
 alter table public.hunts    add column if not exists spread_start boolean not null default true;
+alter table public.hunts    alter column title set default 'The Escape Trail';
+alter table public.hunts    alter column organizer set default '';
 alter table public.settings add column if not exists active_hunt uuid references public.hunts(id) on delete set null;
 alter table public.teams    add column if not exists hunt_id uuid references public.hunts(id) on delete cascade;
 alter table public.points   add column if not exists hunt_id uuid references public.hunts(id) on delete cascade;

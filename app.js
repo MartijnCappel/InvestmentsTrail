@@ -1,4 +1,4 @@
-/* The Investment Trail — standalone scavenger hunt (GitHub Pages + Supabase) */
+/* The Escape Trail — standalone scavenger hunt (GitHub Pages + Supabase) */
 (() => {
 "use strict";
 
@@ -262,8 +262,8 @@ function onGeo() {
 function renderLogin(err = "") {
   ui.screen = "login"; stopGeo();
   app.innerHTML = `<div class="login"><div class="login-card">
-    <div class="org"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="none" stroke="var(--brand)" stroke-width="2"/><path d="M12 4l3 8-3 8-3-8z" fill="var(--gold)"/><path d="M12 4l3 8H9z" fill="var(--brand)"/></svg>ABN AMRO Investments · Team event</div>
-    <h1>The Investment <em>Trail</em></h1>
+    <div class="org"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="none" stroke="var(--brand)" stroke-width="2"/><path d="M12 4l3 8-3 8-3-8z" fill="var(--gold)"/><path d="M12 4l3 8H9z" fill="var(--brand)"/></svg>Team event</div>
+    <h1>The Escape <em>Trail</em></h1>
     <p class="muted" style="margin:0">Enter the code you received from the organiser to open your team's map.</p>
     <form class="codebox" id="loginf" autocomplete="off">
       <label for="code" class="eyebrow">Your code</label>
@@ -358,7 +358,7 @@ function updateTeam() {
   const tid = S.team_id, t = teamById(tid);
   if (!t) { saveSession(null); render(true); return; }
   const c = cfg(), st = status();
-  $("#t-hunt").textContent = c.title || "The Investment Trail";
+  $("#t-hunt").textContent = c.title || "The Escape Trail";
   $("#t-name").textContent = t.name;
   $("#t-score").textContent = t.score || 0;
   const un = unreadFor(tid, "team"); $("#t-unread").innerHTML = un ? `<span class="badge">${un}</span>` : "";
@@ -512,7 +512,7 @@ function openInfo() {
   const c = S && S.config || {}, r = c.radius || 15;
   const dot = col => `<i class="dot" style="background:${col}"></i>`;
   const sec = (title, body) => `<section class="info-sec"><h3>${title}</h3>${body}</section>`;
-  openSheet(`<div class="sheet-h"><div class="t"><div class="eyebrow">${esc(c.title || "The Investment Trail")}</div><h2>How the hunt works</h2></div><button class="btn ghost sm" data-close>Close</button></div>
+  openSheet(`<div class="sheet-h"><div class="t"><div class="eyebrow">${esc(c.title || "The Escape Trail")}</div><h2>How the hunt works</h2></div><button class="btn ghost sm" data-close>Close</button></div>
     <div class="info">
     ${sec("The idea", `<p>Your team walks a route past a series of stops on the map. At every stop there's a task. Complete them all, collect as many points as you can, and finish at the end point. The team with the most points wins.</p>`)}
     ${sec("Before you start", `<ul>
@@ -694,7 +694,7 @@ function updateAdmin() {
     if (!first) { closeSheet(); fitArea(amap); }
     renderAdminPanel(true);
   }
-  $("#a-title").textContent = c.title || "The Investment Trail";
+  $("#a-title").textContent = c.title || "The Escape Trail";
   $("#a-who").textContent = "Organiser" + (S.me && S.me.name && S.me.name !== "Organiser" ? " · " + S.me.name : "");
   $("#a-status").innerHTML = `<span class="statuspill st-${st}">${st === "setup" ? "Not started" : st === "live" ? "Live" : "Ended"}</span>`;
   const sb_ = $("#a-statusbtn");

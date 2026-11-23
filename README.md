@@ -1,6 +1,6 @@
-# The Investment Trail
+# The Escape Trail
 
-Speurtocht-app (in het Engels) voor ABN AMRO Investments. Elk team begint bij een eigen startpunt en loopt de punten daarna op volgorde af. Het ziet steeds alleen het eerstvolgende punt. De opdracht van een punt gaat pas open als het team binnen 15 meter staat.
+Speurtocht-app (in het Engels). Elk team begint bij een eigen startpunt en loopt de punten daarna op volgorde af. Het ziet steeds alleen het eerstvolgende punt. De opdracht van een punt gaat pas open als het team binnen 15 meter staat.
 
 - **Hosting:** GitHub Pages (statische bestanden, geen build-stap)
 - **Data, realtime en foto's:** Supabase
