@@ -153,6 +153,7 @@ create table if not exists public.hunts (
   bg_opacity   real not null default 0.85,
   created_at   timestamptz not null default now()
 );
+alter table public.hunts    add column if not exists spread_start boolean not null default true;
 alter table public.settings add column if not exists active_hunt uuid references public.hunts(id) on delete set null;
 alter table public.teams    add column if not exists hunt_id uuid references public.hunts(id) on delete cascade;
 alter table public.points   add column if not exists hunt_id uuid references public.hunts(id) on delete cascade;
@@ -282,7 +283,8 @@ end $$;
 -- ---------- route helpers ----------
 -- Each team walks all points in order of their number, starting at its own
 -- start point and wrapping around. Without a chosen start point, teams are
--- spread over the points in the order they were created.
+-- spread over the points in the order they were created — or, when the hunt
+-- has spread_start off (a story route), they all start at point 1.
 create or replace function public._team_seq(p_team uuid) returns table(point_id uuid, pos int)
 language sql stable security definer set search_path = public as $$
   with hu as (select hunt_id as h from teams where id = p_team),
@@ -293,7 +295,8 @@ language sql stable security definer set search_path = public as $$
     select coalesce(
       (select i from pts where id = (select start_point from teams where id = p_team)),
       (select (x.rn % greatest((select count(*) from pts), 1))::int
-         from (select id, (row_number() over (order by created_at) - 1) rn from teams where hunt_id = (select h from hu)) x where x.id = p_team),
+         from (select id, (row_number() over (order by created_at) - 1) rn from teams where hunt_id = (select h from hu)) x
+         where x.id = p_team and (select spread_start from hunts where id = (select h from hu))),
       0) as s
   )
   select pts.id, ((pts.i - st.s + pts.cnt) % pts.cnt)::int from pts, st
@@ -520,6 +523,7 @@ begin
       finish_title = case when p ? 'finish_title' then coalesce(p->>'finish_title', '') else finish_title end,
       finish_text  = case when p ? 'finish_text'  then coalesce(p->>'finish_text', '') else finish_text end,
       radius       = case when p ? 'radius'       then greatest(5, least(500, (p->>'radius')::int)) else radius end,
+      spread_start = case when p ? 'spread_start' then (p->>'spread_start')::boolean else spread_start end,
       bg_url       = case when p ? 'bg_url'       then p->>'bg_url' else bg_url end,
       bg_opacity   = case when p ? 'bg_opacity'   then (p->>'bg_opacity')::real else bg_opacity end
     where id = h;
@@ -651,8 +655,8 @@ begin
 
   elsif p_action = 'hunt_copy' then
     -- copies the area, finish, points and bonus tasks; not the teams or any progress
-    insert into hunts (title, organizer, status, bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity)
-    select left('Copy of ' || title, 60), organizer, 'setup', bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity
+    insert into hunts (title, organizer, status, bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity, spread_start)
+    select left('Copy of ' || title, 60), organizer, 'setup', bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity, spread_start
       from hunts where id = (p->>'id')::uuid
     returning id into new_id;
     if new_id is null then raise exception 'no_hunt'; end if;

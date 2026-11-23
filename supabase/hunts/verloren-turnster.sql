@@ -12,7 +12,7 @@ begin
     return;
   end if;
 
-  insert into public.hunts (title, organizer, status, bbox, finish, finish_title, finish_text, radius)
+  insert into public.hunts (title, organizer, status, bbox, finish, finish_title, finish_text, radius, spread_start)
   values (
     'De Verloren Turnster',
     'Escape uit het Haarlemmermeerse Bos',
@@ -25,7 +25,7 @@ begin
 Schrijf ze op een blaadje en puzzel ze in de juiste volgorde. Dan ontdek je hét grootste geheim om een topturnster te worden.
 
 Roep het woord hardop om de betovering te verbreken en uit het bos te ontsnappen!$t$,
-    25)
+    25, false)
   returning id into h;
 
   insert into public.points (hunt_id, n, kind, title, prompt, resp, value, expect, lat, lng) values

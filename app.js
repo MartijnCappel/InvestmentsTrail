@@ -781,7 +781,7 @@ function openTeamEditor(id) {
   openSheet(`<div class="sheet-h"><div class="t"><div class="eyebrow">Team</div><h2>${esc(t.name)}</h2></div><button class="btn ghost sm" data-close>Close</button></div>
   <form class="form" id="te"><label>Team name<input id="te-name" maxlength="40" value="${esc(t.name)}"></label>
   <label>Members<textarea id="te-mem" rows="4" placeholder="One name per line">${esc((t.members || []).join("\n"))}</textarea></label>
-  <label>Start point<select id="te-start"><option value="">Automatic (spread over the points)</option>${S.points.map(p => `<option value="${p.id}"${t.start_point === p.id ? " selected" : ""}>#${p.n} ${esc(p.title)}</option>`).join("")}</select><small>From there the team follows the point numbers in order, wrapping round to #1.</small></label>
+  <label>Start point<select id="te-start"><option value="">${cfg().spread_start === false ? "Automatic (point 1)" : "Automatic (spread over the points)"}</option>${S.points.map(p => `<option value="${p.id}"${t.start_point === p.id ? " selected" : ""}>#${p.n} ${esc(p.title)}</option>`).join("")}</select><small>From there the team follows the point numbers in order, wrapping round to #1.</small></label>
   <div class="item"><div class="main"><b class="mono">${esc(t.code)}</b><small>Login code</small></div><span></span><button type="button" class="btn sm" id="te-code">New code</button></div>
   <div class="actions"><button type="button" class="btn danger" id="te-del">Delete team</button><span class="spacer"></span><button class="btn primary">Save</button></div></form>
   <div class="card"><h3>Unlock by hand</h3><p class="hint" style="margin:0">For when the team is at the spot but their GPS won't cooperate.</p>
@@ -885,12 +885,13 @@ function panelSettings(body) {
   const f = ensure(body, "st-f", `<form id="st-f" class="card form"><h3>Hunt</h3>
     <label>Name of the hunt<input id="st-title" maxlength="60"></label>
     <label>Default unlock radius (m)<input id="st-rad" type="number" min="5" max="500" step="1"><small>How close a team must be to open a task. Points can override this.</small></label>
+    <label style="display:flex;gap:10px;align-items:flex-start;color:var(--ink)"><input type="checkbox" id="st-spread" style="margin-top:3px"><span>Spread teams over different start points<small style="display:block">Off: every team starts at point 1 — best for a route that tells a story. You can still set a start point per team under Teams.</small></span></label>
     <h3 style="margin-top:6px">Finish</h3>
     <label>Finish title<input id="st-ft" maxlength="60"></label>
     <label>Message at the finish<textarea id="st-fx" rows="3"></textarea></label>
     <div class="actions"><button type="button" class="btn" data-act="mode" data-mode="finish">Place finish on map</button><button class="btn primary">Save</button></div></form>`);
-  if (!f._b) { f._b = true; $("#st-title").value = c.title || ""; $("#st-rad").value = c.radius || 15; $("#st-ft").value = c.finish_title || ""; $("#st-fx").value = c.finish_text || "";
-    f.onsubmit = e => { e.preventDefault(); act({title:$("#st-title").value.trim(), radius:Math.round(+$("#st-rad").value || 15), finish_title:$("#st-ft").value.trim(), finish_text:$("#st-fx").value.trim()}, "config", "Settings saved"); }; }
+  if (!f._b) { f._b = true; $("#st-title").value = c.title || ""; $("#st-rad").value = c.radius || 15; $("#st-spread").checked = c.spread_start !== false; $("#st-ft").value = c.finish_title || ""; $("#st-fx").value = c.finish_text || "";
+    f.onsubmit = e => { e.preventDefault(); act({title:$("#st-title").value.trim(), radius:Math.round(+$("#st-rad").value || 15), spread_start:$("#st-spread").checked, finish_title:$("#st-ft").value.trim(), finish_text:$("#st-fx").value.trim()}, "config", "Settings saved"); }; }
   const a = ensure(body, "st-adm", `<form id="st-adm" class="card form"><h3>Organiser code</h3><p class="hint" style="margin:0">The code you log in with as organiser. Keep it to yourself.</p><div class="chatform"><input id="st-code" placeholder="New organiser code" maxlength="24" autocomplete="off"><button class="btn">Change</button></div></form>`);
   if (!a._b) { a._b = true; a.onsubmit = async e => { e.preventDefault(); const v = $("#st-code").value.trim(); const r = await act({code:v}, "admin_code", "Organiser code changed"); if (r.ok) { saveSession({...session, code:v}); $("#st-code").value = ""; } }; }
   const z = ensure(body, "st-reset", `<div id="st-reset" class="card"><h3>Test run finished?</h3><p class="hint" style="margin:0">Clear all answers, unlocks, chat messages and bonus claims. Teams, points and bonus tasks stay. The hunt goes back to “Not started”.</p><div class="actions"><button class="btn danger" id="st-rst">Clear all progress</button></div></div>`);

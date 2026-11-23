@@ -26,7 +26,7 @@ De anon key is bedoeld voor browsers en mag publiek staan. Zet hier **nooit** de
 3. Na een minuut staat de app op `https://martijncappel.github.io/InvestmentsTrail/`.
 
 ### Een kant-en-klare speurtocht importeren
-In `supabase/hunts/` staan importscripts, zoals [`verloren-turnster.sql`](supabase/hunts/verloren-turnster.sql). Draai zo'n script in de SQL Editor (na `setup.sql`). De speurtocht verschijnt dan in de app onder *Hunts*; klik op *Open* om hem actief te maken.
+In `supabase/hunts/` staan importscripts, zoals [`verloren-turnster.sql`](supabase/hunts/verloren-turnster.sql) en [`laatste-code-gustav.sql`](supabase/hunts/laatste-code-gustav.sql). Draai zo'n script in de SQL Editor (na `setup.sql`). De speurtocht verschijnt dan in de app onder *Hunts*; klik op *Open* om hem actief te maken.
 
 ## Gebruik
 
@@ -40,6 +40,7 @@ In `supabase/hunts/` staan importscripts, zoals [`verloren-turnster.sql`](supaba
 | Punt verplaatsen | Sleep de pin |
 | Straal | Standaard 15 m (Settings); per punt aan te passen |
 | Teams | Tab *Teams*: aanmaken, code delen, voortgang, volgend punt en laatste locatie bekijken |
+| Iedereen bij punt 1 beginnen | *Settings → Spread teams over different start points* uitzetten. Handig voor een route die een verhaal vertelt |
 | Startpunt per team | *Teams → Edit → Start point*. Het team volgt daarna de puntnummers op volgorde en gaat na het laatste nummer verder bij #1. Kies je niets, dan worden de teams automatisch over de punten verdeeld |
 | GPS werkt niet bij een team | *Teams → Edit → Unlock a point by hand* |
 | Antwoorden en foto's | Tab *Review*: goedkeuren met punten, of afwijzen met een notitie |
