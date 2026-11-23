@@ -31,6 +31,7 @@ De anon key is bedoeld voor browsers en mag publiek staan. Zet hier **nooit** de
 
 | Wat | Hoe |
 |---|---|
+| Meerdere speurtochten | Tab *Hunts*. Je kunt meerdere speurtochten bewaren; er is er altijd één actief. Die bewerk je, en die spelen de teams. Teamcodes werken alleen voor de actieve speurtocht. *Create & open* maakt een lege nieuwe, *Copy* kopieert gebied, finish, punten en bonussen (zonder teams en voortgang), *Open* maakt een andere speurtocht actief. Wisselen kan niet zolang de actieve speurtocht live is |
 | Gebied kiezen | *Select area*, tik twee hoeken aan |
 | Punt toevoegen | *Add point* en tik op de kaart. Kleur = type: blauw = vraag, oranje = opdracht, roze = activiteit |
 | Punt verplaatsen | Sleep de pin |

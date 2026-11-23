@@ -85,6 +85,9 @@ const ERR = {
   not_admin:"Your organiser code no longer works. Log in again.",
   code_too_short:"Use at least 4 letters or digits.",
   code_in_use:"That code is already used by a team.",
+  hunt_live:"The active hunt is live. End it first — only one hunt can be open at a time.",
+  hunt_active:"You can't delete the active hunt. Open another hunt first.",
+  no_hunt:"That hunt no longer exists.",
 };
 async function rpc(fn, args) {
   const {data, error} = await sb.rpc(fn, args);
@@ -681,6 +684,12 @@ function drawAdminMarkers() {
 }
 function updateAdmin() {
   const c = cfg(), st = status();
+  if (amap._hunt !== c.id) {          // switched to another hunt: start from a clean slate
+    const first = amap._hunt === undefined;
+    amap._hunt = c.id; amap._fitted = false; aMarkKey = ""; ui.chatTeam = null; setMode("pan");
+    if (!first) { closeSheet(); fitArea(amap); }
+    renderAdminPanel(true);
+  }
   $("#a-title").textContent = c.title || "The Investment Trail";
   $("#a-status").innerHTML = `<span class="statuspill st-${st}">${st === "setup" ? "Not started" : st === "live" ? "Live" : "Ended"}</span>`;
   const sb_ = $("#a-statusbtn");
@@ -694,11 +703,11 @@ function updateAdmin() {
 function renderAdminPanel(force) {
   const review = S.subs.filter(s => s.status === "review").length;
   const unread = S.teams.reduce((a, t) => a + unreadFor(t.id, "admin"), 0);
-  const tabs = [["points","Points"],["teams","Teams"],["review","Review", review],["chat","Chat", unread],["bonus","Bonus"],["settings","Settings"]];
+  const tabs = [["hunts","Hunts"],["points","Points"],["teams","Teams"],["review","Review", review],["chat","Chat", unread],["bonus","Bonus"],["settings","Settings"]];
   patch($("#a-tabs"), tabs.map(([k, l, n]) => `<button class="tab${ui.tab === k ? " on" : ""}" data-act="tab" data-tab="${k}">${l}${n ? `<span class="badge">${n}</span>` : ""}</button>`).join(""));
   const body = $("#a-body");
   if (body._tab !== ui.tab || force) { body._tab = ui.tab; body._last = null; body.innerHTML = ""; body.scrollTop = 0; }
-  ({points:panelPoints, teams:panelTeams, review:panelReview, chat:panelChat, bonus:panelBonus, settings:panelSettings})[ui.tab](body);
+  ({hunts:panelHunts, points:panelPoints, teams:panelTeams, review:panelReview, chat:panelChat, bonus:panelBonus, settings:panelSettings})[ui.tab](body);
 }
 function ensure(body, id, html) { let el = $("#" + id, body); if (!el) { body.insertAdjacentHTML("beforeend", html); el = $("#" + id, body); } return el; }
 
@@ -854,6 +863,22 @@ function openBonusEditor(id, at) {
   });
 }
 
+function panelHunts(body) {
+  const f = ensure(body, "hu-new", `<div id="hu-new" style="display:grid;gap:10px"><h3 style="font-size:18px">Hunts</h3>
+    <p class="hint" style="margin:0">You can keep several hunts. One is active at a time: that's the hunt you edit here and the one the teams play. Team codes only work for the active hunt. You can switch when the active hunt isn't live.</p>
+    <form class="card" id="hu-f"><h3>New hunt</h3><div class="chatform"><input id="hu-title" placeholder="e.g. Zuidas — spring 2027" maxlength="60"><button class="btn primary">Create &amp; open</button></div><small class="hint">Starts empty. To reuse points and bonus tasks, copy an existing hunt below instead.</small></form></div>`);
+  const hf = $("#hu-f", f);
+  if (!hf._b) { hf._b = true; hf.onsubmit = async e => { e.preventDefault(); const i = $("#hu-title"); const r = await act({title:i.value.trim()}, "hunt_new", "New hunt created and opened"); if (r.ok) { i.value = ""; ui.tab = "points"; } }; }
+  const live = status() === "live";
+  const stLabel = st => st === "setup" ? "Not started" : st === "live" ? "Live" : "Ended";
+  patch(ensure(body, "hu-list", `<div id="hu-list" class="list"></div>`), (S.hunts || []).map(h => `<div class="card">
+      <div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1;min-width:0"><b style="font-family:var(--f-display);font-size:16px;overflow-wrap:anywhere">${esc(h.title)}</b>
+        <div class="muted" style="font-size:12.5px">${h.points} points · ${h.bonuses} bonus tasks · ${h.teams} teams · created ${new Date(h.created_at).toLocaleDateString([], {day:"numeric", month:"short", year:"numeric"})}</div></div>
+        <span class="statuspill st-${h.status}">${stLabel(h.status)}</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${h.active ? `<span class="chip" style="color:var(--brand);border-color:var(--brand)">Active — you're editing this one</span>` : `<button class="btn sm primary" data-act="hunt-open" data-id="${h.id}" ${live ? "disabled title=\"End the live hunt first\"" : ""}>Open</button>`}
+        <button class="btn sm" data-act="hunt-copy" data-id="${h.id}">Copy</button><span style="flex:1"></span>${h.active ? "" : `<button class="btn sm danger" data-act="hunt-del" data-id="${h.id}">Delete</button>`}</div>
+    </div>`).join("") + (live ? `<p class="hint" style="margin:0">The active hunt is live, so you can't open another one until you end it.</p>` : ""));
+}
 function panelSettings(body) {
   const c = cfg();
   const f = ensure(body, "st-f", `<form id="st-f" class="card form"><h3>Hunt</h3>
@@ -891,6 +916,9 @@ document.addEventListener("click", async e => {
     case "a-end": if (!armed(el, "Confirm: end hunt")) break; ui.tab = "teams"; act({}, "end", "Hunt ended — winner picked"); break;
     case "a-reopen": act({}, "reopen", "Hunt reopened"); break;
     case "tab": ui.tab = el.dataset.tab; renderAdminPanel(true); break;
+    case "hunt-open": act({id}, "hunt_activate", "Hunt opened"); break;
+    case "hunt-copy": act({id}, "hunt_copy", "Copy saved — open it to edit"); break;
+    case "hunt-del": if (armed(el, "Tap again — deletes its teams and answers too")) act({id}, "hunt_delete", "Hunt deleted"); break;
     case "mode": setMode(el.dataset.mode); if (el.dataset.mode === "area" && !cfg().bbox) amap.setView([52.2, 5.3], 7); break;
     case "edit-point": openPointEditor(id); break;
     case "edit-team": openTeamEditor(id); break;

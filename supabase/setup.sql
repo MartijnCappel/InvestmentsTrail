@@ -16,6 +16,9 @@
 --    before its next point appears; other teams don't see it meanwhile.
 --    After one team finishes it the bonus closes; the organiser can offer
 --    it again to the teams that haven't done it yet.
+--  * Several hunts can be saved. Exactly one is active: that is the hunt
+--    the organiser edits and the teams play. Team codes only work for the
+--    active hunt. Switching is blocked while the active hunt is live.
 --  * "ticks" is a one-row public counter; the app listens to it via
 --    Realtime and re-fetches its state when it changes.
 -- =====================================================================
@@ -134,7 +137,51 @@ insert into public.settings (id, admin_hash)
 values (1, extensions.crypt('ADMIN2026', extensions.gen_salt('bf')))
 on conflict do nothing;
 
+-- ---------- multiple hunts (added later; safe to re-run) ----------
+create table if not exists public.hunts (
+  id           uuid primary key default gen_random_uuid(),
+  title        text not null default 'The Investment Trail',
+  organizer    text not null default 'ABN AMRO Investments · Team event',
+  status       text not null default 'setup' check (status in ('setup','live','ended')),
+  bbox         jsonb,
+  finish       jsonb,
+  finish_title text not null default 'The finish',
+  finish_text  text not null default 'Well done! Head to the finish to meet the organisers.',
+  winner_id    uuid,
+  radius       int  not null default 15,
+  bg_url       text,
+  bg_opacity   real not null default 0.85,
+  created_at   timestamptz not null default now()
+);
+alter table public.settings add column if not exists active_hunt uuid references public.hunts(id) on delete set null;
+alter table public.teams    add column if not exists hunt_id uuid references public.hunts(id) on delete cascade;
+alter table public.points   add column if not exists hunt_id uuid references public.hunts(id) on delete cascade;
+alter table public.bonuses  add column if not exists hunt_id uuid references public.hunts(id) on delete cascade;
+create index if not exists teams_hunt_idx   on public.teams (hunt_id);
+create index if not exists points_hunt_idx  on public.points (hunt_id);
+create index if not exists bonuses_hunt_idx on public.bonuses (hunt_id);
+
+-- Move everything that existed before into a first hunt, and make sure one hunt is active.
+do $$
+declare h uuid;
+begin
+  if not exists (select 1 from public.hunts) then
+    insert into public.hunts (title, organizer, status, bbox, finish, finish_title, finish_text, winner_id, radius, bg_url, bg_opacity)
+    select title, organizer, status, bbox, finish, finish_title, finish_text, winner_id, radius, bg_url, bg_opacity
+      from public.settings where id = 1
+    returning id into h;
+    update public.settings set active_hunt = h where id = 1;
+  end if;
+  select coalesce((select active_hunt from public.settings where id = 1),
+                  (select id from public.hunts order by created_at limit 1)) into h;
+  update public.settings set active_hunt = h where id = 1 and active_hunt is null;
+  update public.teams   set hunt_id = h where hunt_id is null;
+  update public.points  set hunt_id = h where hunt_id is null;
+  update public.bonuses set hunt_id = h where hunt_id is null;
+end $$;
+
 -- ---------- row level security ----------
+alter table public.hunts    enable row level security;
 alter table public.settings enable row level security;
 alter table public.teams    enable row level security;
 alter table public.points   enable row level security;
@@ -173,9 +220,15 @@ language sql stable security definer set search_path = public, extensions as $$
   select exists (select 1 from settings where admin_hash = extensions.crypt(_norm(p_code), admin_hash))
 $$;
 
+create or replace function public._active() returns uuid
+language sql stable security definer set search_path = public as $$
+  select active_hunt from settings where id = 1
+$$;
+
+-- a team code only works for the active hunt
 create or replace function public._team(p_code text) returns uuid
 language sql stable security definer set search_path = public as $$
-  select id from teams where _norm(code) = _norm(p_code) and _norm(p_code) <> '' limit 1
+  select id from teams where _norm(code) = _norm(p_code) and _norm(p_code) <> '' and hunt_id = _active() limit 1
 $$;
 
 create or replace function public._bump() returns void
@@ -210,8 +263,8 @@ $$;
 
 create or replace function public._all_done(p_team uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select (select count(*) from points) > 0 and not exists (
-    select 1 from points p where not exists (
+  select (select count(*) from points where hunt_id = (select hunt_id from teams where id = p_team)) > 0 and not exists (
+    select 1 from points p where p.hunt_id = (select hunt_id from teams where id = p_team) and not exists (
       select 1 from subs s where s.team_id = p_team and s.target_id = p.id and s.status <> 'rejected'))
 $$;
 
@@ -232,13 +285,15 @@ end $$;
 -- spread over the points in the order they were created.
 create or replace function public._team_seq(p_team uuid) returns table(point_id uuid, pos int)
 language sql stable security definer set search_path = public as $$
-  with pts as (
-    select id, (row_number() over (order by n, created_at) - 1)::int as i, count(*) over ()::int as cnt from points
+  with hu as (select hunt_id as h from teams where id = p_team),
+  pts as (
+    select id, (row_number() over (order by n, created_at) - 1)::int as i, count(*) over ()::int as cnt
+    from points where hunt_id = (select h from hu)
   ), st as (
     select coalesce(
       (select i from pts where id = (select start_point from teams where id = p_team)),
-      (select (x.rn % greatest((select count(*) from points), 1))::int
-         from (select id, (row_number() over (order by created_at) - 1) rn from teams) x where x.id = p_team),
+      (select (x.rn % greatest((select count(*) from pts), 1))::int
+         from (select id, (row_number() over (order by created_at) - 1) rn from teams where hunt_id = (select h from hu)) x where x.id = p_team),
       0) as s
   )
   select pts.id, ((pts.i - st.s + pts.cnt) % pts.cnt)::int from pts, st
@@ -260,10 +315,10 @@ $$;
 create or replace function public.get_state(p_code text) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare
-  s settings; tid uuid; adm boolean; done boolean; nxt uuid; act uuid;
+  s hunts; tid uuid; adm boolean; done boolean; nxt uuid; act uuid;
   res jsonb;
 begin
-  select * into s from settings where id = 1;
+  select * into s from hunts where id = _active();
   adm := _is_admin(p_code);
   if not adm then tid := _team(p_code); end if;
   if not adm and tid is null then return null; end if;
@@ -271,16 +326,21 @@ begin
   if adm then
     return jsonb_build_object(
       'role', 'admin',
-      'config', to_jsonb(s) - 'admin_hash',
-      'points', coalesce((select jsonb_agg(to_jsonb(p) order by p.n) from points p), '[]'),
-      'bonuses', coalesce((select jsonb_agg(to_jsonb(b) order by b.created_at) from bonuses b), '[]'),
+      'config', to_jsonb(s),
+      'hunts', coalesce((select jsonb_agg(jsonb_build_object(
+          'id', hh.id, 'title', hh.title, 'status', hh.status, 'created_at', hh.created_at, 'active', hh.id = s.id,
+          'points', (select count(*) from points where hunt_id = hh.id),
+          'bonuses', (select count(*) from bonuses where hunt_id = hh.id),
+          'teams', (select count(*) from teams where hunt_id = hh.id)) order by hh.created_at desc) from hunts hh), '[]'),
+      'points', coalesce((select jsonb_agg(to_jsonb(p) order by p.n) from points p where p.hunt_id = s.id), '[]'),
+      'bonuses', coalesce((select jsonb_agg(to_jsonb(b) order by b.created_at) from bonuses b where b.hunt_id = s.id), '[]'),
       'teams', coalesce((select jsonb_agg(to_jsonb(t) || jsonb_build_object(
           'score', _score(t.id), 'all_done', _all_done(t.id), 'next_point', _next_point(t.id),
-          'start_eff', (select point_id from _team_seq(t.id) where pos = 0)) order by t.created_at) from teams t), '[]'),
-      'unlocks', coalesce((select jsonb_agg(to_jsonb(u)) from unlocks u), '[]'),
-      'subs', coalesce((select jsonb_agg(to_jsonb(x) order by x.at) from subs x), '[]'),
-      'msgs', coalesce((select jsonb_agg(to_jsonb(m) order by m.id) from msgs m), '[]'),
-      'reads', coalesce((select jsonb_agg(to_jsonb(r)) from reads r), '[]')
+          'start_eff', (select point_id from _team_seq(t.id) where pos = 0)) order by t.created_at) from teams t where t.hunt_id = s.id), '[]'),
+      'unlocks', coalesce((select jsonb_agg(to_jsonb(u)) from unlocks u join teams t on t.id = u.team_id where t.hunt_id = s.id), '[]'),
+      'subs', coalesce((select jsonb_agg(to_jsonb(x) order by x.at) from subs x join teams t on t.id = x.team_id where t.hunt_id = s.id), '[]'),
+      'msgs', coalesce((select jsonb_agg(to_jsonb(m) order by m.id) from msgs m join teams t on t.id = m.team_id where t.hunt_id = s.id), '[]'),
+      'reads', coalesce((select jsonb_agg(to_jsonb(r)) from reads r join teams t on t.id = r.team_id where t.hunt_id = s.id), '[]')
     );
   end if;
 
@@ -296,7 +356,7 @@ begin
       'finish', case when done or s.status = 'ended' then s.finish end,
       'finish_title', case when done then s.finish_title end,
       'finish_text', case when done then s.finish_text end,
-      'all_done', done, 'points_total', (select count(*) from points),
+      'all_done', done, 'points_total', (select count(*) from points where hunt_id = s.id),
       'bonus_active', act is not null),
     -- only points already done, plus the single next point on this team's route
     'points', case when s.status = 'setup' then '[]'::jsonb else coalesce((
@@ -317,12 +377,12 @@ begin
         'unlocked', b.claim_team is not distinct from tid and b.claim_unlocked,
         'prompt', case when b.claim_team = tid and b.claim_unlocked then b.prompt end) order by b.created_at)
       from bonuses b
-      where b.released and b.lat is not null and not (tid = any(b.done_by))
+      where b.hunt_id = s.id and b.released and b.lat is not null and not (tid = any(b.done_by))
         and (case when act is not null then b.id = act else b.claim_team is null end)), '[]') end,
     'teams', coalesce((
       select jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name, 'score', _score(t.id),
         'members', case when t.id = tid then to_jsonb(t.members) end) order by t.created_at)
-      from teams t where t.id = tid or s.status = 'ended'), '[]'),
+      from teams t where t.hunt_id = s.id and (t.id = tid or s.status = 'ended')), '[]'),
     'subs', coalesce((select jsonb_agg(to_jsonb(x) order by x.at) from subs x where x.team_id = tid), '[]'),
     'msgs', coalesce((select jsonb_agg(to_jsonb(m) order by m.id) from msgs m where m.team_id = tid), '[]'),
     'reads', coalesce((select jsonb_agg(to_jsonb(r)) from reads r where r.team_id = tid), '[]')
@@ -334,13 +394,13 @@ end $$;
 create or replace function public.team_action(p_code text, p_action text, p jsonb default '{}') returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
-  tid uuid; s settings; pt points; d float8; eff float8; rad int;
+  tid uuid; s hunts; pt points; d float8; eff float8; rad int;
   tgt uuid; st text; aw int; alts text[]; prev subs; b bonuses; act uuid;
   plat float8; plng float8;
 begin
   tid := _team(p_code);
   if tid is null then raise exception 'not_logged_in'; end if;
-  select * into s from settings where id = 1;
+  select * into s from hunts where id = _active();
   act := _active_bonus(tid);
 
   if p_action = 'ping' then
@@ -433,7 +493,7 @@ begin
     if s.status <> 'live' then return jsonb_build_object('ok', false, 'reason', 'not_live'); end if;
     if act is not null then return jsonb_build_object('ok', false, 'reason', 'bonus_first'); end if;
     update bonuses set claim_team = tid, claim_at = now(), claim_unlocked = false
-     where id = (p->>'bonus_id')::uuid and released and lat is not null and claim_team is null and not (tid = any(done_by));
+     where id = (p->>'bonus_id')::uuid and hunt_id = s.id and released and lat is not null and claim_team is null and not (tid = any(done_by));
     if not found then return jsonb_build_object('ok', false, 'reason', 'taken'); end if;
 
   else
@@ -447,12 +507,12 @@ end $$;
 -- ---------- organiser actions ----------
 create or replace function public.admin_action(p_code text, p_action text, p jsonb default '{}') returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
-declare new_id uuid; c text; w uuid;
+declare new_id uuid; c text; w uuid; h uuid := _active();
 begin
   if not _is_admin(p_code) then raise exception 'not_admin'; end if;
 
   if p_action = 'config' then
-    update settings set
+    update hunts set
       title        = case when p ? 'title'        then coalesce(nullif(trim(p->>'title'), ''), title) else title end,
       organizer    = case when p ? 'organizer'    then coalesce(p->>'organizer', '') else organizer end,
       bbox         = case when p ? 'bbox'         then p->'bbox' else bbox end,
@@ -462,7 +522,7 @@ begin
       radius       = case when p ? 'radius'       then greatest(5, least(500, (p->>'radius')::int)) else radius end,
       bg_url       = case when p ? 'bg_url'       then p->>'bg_url' else bg_url end,
       bg_opacity   = case when p ? 'bg_opacity'   then (p->>'bg_opacity')::real else bg_opacity end
-    where id = 1;
+    where id = h;
 
   elsif p_action = 'admin_code' then
     if length(_norm(p->>'code')) < 4 then raise exception 'code_too_short'; end if;
@@ -470,28 +530,31 @@ begin
     update settings set admin_hash = extensions.crypt(_norm(p->>'code'), extensions.gen_salt('bf')) where id = 1;
 
   elsif p_action = 'start' then
-    update settings set status = 'live' where id = 1;
+    update hunts set status = 'live' where id = h;
   elsif p_action = 'reopen' then
-    update settings set status = 'live', winner_id = null where id = 1;
+    update hunts set status = 'live', winner_id = null where id = h;
   elsif p_action = 'end' then
-    select t.id into w from teams t
+    select t.id into w from teams t where t.hunt_id = h
       order by _score(t.id) desc,
                (select count(*) from subs s where s.team_id = t.id and s.status <> 'rejected' and s.target = 'point') desc,
                (select max(at) from subs s where s.team_id = t.id and s.status = 'ok') asc nulls last
       limit 1;
-    update settings set status = 'ended', winner_id = w where id = 1;
+    update hunts set status = 'ended', winner_id = w where id = h;
 
   elsif p_action = 'reset' then
     -- clears all progress (answers, unlocks, chat) but keeps teams, points and bonus tasks
-    delete from subs where true; delete from unlocks where true; delete from msgs where true; delete from reads where true;
-    update bonuses set claim_team = null, claim_at = null, claim_unlocked = false, done_by = '{}', released = false where true;
-    update teams set last_lat = null, last_lng = null, last_seen = null where true;
-    update settings set status = 'setup', winner_id = null where id = 1;
+    delete from subs    where team_id in (select id from teams where hunt_id = h);
+    delete from unlocks where team_id in (select id from teams where hunt_id = h);
+    delete from msgs    where team_id in (select id from teams where hunt_id = h);
+    delete from reads   where team_id in (select id from teams where hunt_id = h);
+    update bonuses set claim_team = null, claim_at = null, claim_unlocked = false, done_by = '{}', released = false where hunt_id = h;
+    update teams set last_lat = null, last_lng = null, last_seen = null where hunt_id = h;
+    update hunts set status = 'setup', winner_id = null where id = h;
 
   elsif p_action = 'point_save' then
     if nullif(p->>'id', '') is null then
-      insert into points (n, kind, title, prompt, resp, value, expect, lat, lng, radius)
-      values ((select coalesce(max(n), 0) + 1 from points), p->>'kind', p->>'title', coalesce(p->>'prompt', ''),
+      insert into points (hunt_id, n, kind, title, prompt, resp, value, expect, lat, lng, radius)
+      values (h, (select coalesce(max(n), 0) + 1 from points where hunt_id = h), p->>'kind', p->>'title', coalesce(p->>'prompt', ''),
               p->>'resp', coalesce((p->>'value')::int, 0), coalesce(p->>'expect', ''),
               (p->>'lat')::float8, (p->>'lng')::float8, nullif(p->>'radius', '')::int)
       returning id into new_id;
@@ -509,13 +572,13 @@ begin
   elsif p_action = 'point_delete' then
     delete from points where id = (p->>'id')::uuid;
     delete from subs where target = 'point' and target_id = (p->>'id')::uuid;
-    update points set n = r.rn from (select id, row_number() over (order by n, created_at) rn from points) r where points.id = r.id;
+    update points set n = r.rn from (select id, row_number() over (order by n, created_at) rn from points where hunt_id = h) r where points.id = r.id;
 
   elsif p_action = 'team_save' then
     if nullif(p->>'id', '') is null then
       c := _new_code();
-      insert into teams (name, code, members)
-      values (coalesce(nullif(trim(p->>'name'), ''), 'Team ' || ((select count(*) from teams) + 1)), c,
+      insert into teams (hunt_id, name, code, members)
+      values (h, coalesce(nullif(trim(p->>'name'), ''), 'Team ' || ((select count(*) from teams where hunt_id = h) + 1)), c,
               coalesce((select array_agg(trim(x)) from jsonb_array_elements_text(p->'members') x where trim(x) <> ''), '{}'))
       returning id into new_id;
       perform _bump();
@@ -552,8 +615,8 @@ begin
 
   elsif p_action = 'bonus_save' then
     if nullif(p->>'id', '') is null then
-      insert into bonuses (title, prompt, resp, value, expect, lat, lng, radius)
-      values (p->>'title', coalesce(p->>'prompt', ''), coalesce(p->>'resp', 'photo'), coalesce((p->>'value')::int, 25),
+      insert into bonuses (hunt_id, title, prompt, resp, value, expect, lat, lng, radius)
+      values (h, p->>'title', coalesce(p->>'prompt', ''), coalesce(p->>'resp', 'photo'), coalesce((p->>'value')::int, 25),
               coalesce(p->>'expect', ''), (p->>'lat')::float8, (p->>'lng')::float8, nullif(p->>'radius', '')::int);
     else
       update bonuses set title = coalesce(p->>'title', title), prompt = coalesce(p->>'prompt', prompt),
@@ -570,6 +633,39 @@ begin
     update bonuses set released = coalesce((p->>'released')::boolean, true) where id = (p->>'id')::uuid;
   elsif p_action = 'bonus_free' then
     update bonuses set claim_team = null, claim_at = null, claim_unlocked = false where id = (p->>'id')::uuid;
+
+  -- ----- hunts: only one is active (edited and played) at a time -----
+  elsif p_action = 'hunt_new' then
+    if (select status from hunts where id = h) = 'live' then raise exception 'hunt_live'; end if;
+    insert into hunts (title) values (coalesce(nullif(trim(p->>'title'), ''), 'New hunt')) returning id into new_id;
+    update settings set active_hunt = new_id where id = 1;
+    perform _bump();
+    return jsonb_build_object('ok', true, 'id', new_id);
+
+  elsif p_action = 'hunt_activate' then
+    if (p->>'id')::uuid is distinct from h then
+      if (select status from hunts where id = h) = 'live' then raise exception 'hunt_live'; end if;
+      if not exists (select 1 from hunts where id = (p->>'id')::uuid) then raise exception 'no_hunt'; end if;
+      update settings set active_hunt = (p->>'id')::uuid where id = 1;
+    end if;
+
+  elsif p_action = 'hunt_copy' then
+    -- copies the area, finish, points and bonus tasks; not the teams or any progress
+    insert into hunts (title, organizer, status, bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity)
+    select left('Copy of ' || title, 60), organizer, 'setup', bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity
+      from hunts where id = (p->>'id')::uuid
+    returning id into new_id;
+    if new_id is null then raise exception 'no_hunt'; end if;
+    insert into points (hunt_id, n, kind, title, prompt, resp, value, expect, lat, lng, radius)
+    select new_id, n, kind, title, prompt, resp, value, expect, lat, lng, radius from points where hunt_id = (p->>'id')::uuid;
+    insert into bonuses (hunt_id, title, prompt, resp, value, expect, lat, lng, radius)
+    select new_id, title, prompt, resp, value, expect, lat, lng, radius from bonuses where hunt_id = (p->>'id')::uuid;
+    perform _bump();
+    return jsonb_build_object('ok', true, 'id', new_id);
+
+  elsif p_action = 'hunt_delete' then
+    if (p->>'id')::uuid = h then raise exception 'hunt_active'; end if;
+    delete from hunts where id = (p->>'id')::uuid;
 
   elsif p_action = 'msg' then
     if coalesce(trim(p->>'body'), '') = '' then return '{"ok":false}'; end if;
@@ -590,7 +686,7 @@ end $$;
 -- ---------- who may call what ----------
 revoke all on function public._norm(text), public._is_admin(text), public._team(text), public._bump(),
   public._dist(float8, float8, float8, float8), public._new_code(), public._score(uuid), public._all_done(uuid),
-  public._team_seq(uuid), public._next_point(uuid), public._active_bonus(uuid)
+  public._team_seq(uuid), public._next_point(uuid), public._active_bonus(uuid), public._active()
   from public, anon, authenticated;
 grant execute on function public._norm(text) to anon, authenticated;
 grant execute on function public.login(text), public.get_state(text),
