@@ -25,6 +25,9 @@ De anon key is bedoeld voor browsers en mag publiek staan. Zet hier **nooit** de
 2. Kies bij *Source* **Deploy from a branch**, met branch `main` en map `/ (root)`.
 3. Na een minuut staat de app op `https://martijncappel.github.io/InvestmentsTrail/`.
 
+### Een kant-en-klare speurtocht importeren
+In `supabase/hunts/` staan importscripts, zoals [`verloren-turnster.sql`](supabase/hunts/verloren-turnster.sql). Draai zo'n script in de SQL Editor (na `setup.sql`). De speurtocht verschijnt dan in de app onder *Hunts*; klik op *Open* om hem actief te maken.
+
 ## Gebruik
 
 **Organisator:** log in met **`ADMIN-2026`** en wijzig die code meteen onder **Settings**.

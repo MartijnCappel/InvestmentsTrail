@@ -739,7 +739,8 @@ function openPointEditor(id, at) {
   </form>`, sh => {
     $("[data-close]", sh).onclick = closeSheet;
     const expW = $("#pf-expwrap", sh), val = $("#pf-val", sh);
-    const sync = () => { expW.hidden = $("input[name=kind]:checked", sh).value !== "question"; };
+    const sync = () => { expW.hidden = $("#pf-resp", sh).value === "photo"; };
+    $("#pf-resp", sh).onchange = sync;
     $$("input[name=kind]", sh).forEach(r => r.onchange = () => { sync(); if (!p) val.value = KINDS[r.value].def; }); sync();
     if (p) $("#pf-del", sh).onclick = async e => { if (!armed(e.currentTarget, "Tap again to delete")) return; closeSheet(); act({id:p.id}, "point_delete", "Point deleted"); };
     $("#pf", sh).onsubmit = async e => {
@@ -748,7 +749,7 @@ function openPointEditor(id, at) {
       if (!m) return toast("Enter the location as latitude, longitude — for example 52.3389, 4.8721");
       const k = $("input[name=kind]:checked", sh).value;
       const data = {id:p ? p.id : "", kind:k, title:$("#pf-title", sh).value.trim(), prompt:$("#pf-prompt", sh).value.trim(), resp:$("#pf-resp", sh).value,
-        value:Math.max(0, Math.round(+val.value || 0)), expect:k === "question" ? $("#pf-expect", sh).value.trim() : "", lat:+m[1], lng:+m[2], radius:$("#pf-rad", sh).value.trim()};
+        value:Math.max(0, Math.round(+val.value || 0)), expect:$("#pf-resp", sh).value === "photo" ? "" : $("#pf-expect", sh).value.trim(), lat:+m[1], lng:+m[2], radius:$("#pf-rad", sh).value.trim()};
       if (!data.title) return toast("Give the point a title.");
       const r = await act(data, "point_save", p ? "Point saved" : "Point added"); if (r.ok) closeSheet();
     };

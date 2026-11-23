@@ -458,7 +458,7 @@ begin
       if not exists (select 1 from unlocks where team_id = tid and point_id = tgt) then
         return jsonb_build_object('ok', false, 'reason', 'locked'); end if;
       st := 'review'; aw := 0;
-      if pt.kind = 'question' and pt.expect <> '' and coalesce(p->>'body', '') <> '' then
+      if pt.expect <> '' and coalesce(p->>'body', '') <> '' then
         select array_agg(_norm(x)) into alts from unnest(string_to_array(pt.expect, '|')) x where _norm(x) <> '';
         if _norm(p->>'body') = any(alts) then st := 'ok'; aw := pt.value; end if;
       end if;
