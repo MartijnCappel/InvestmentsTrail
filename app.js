@@ -85,7 +85,11 @@ const ERR = {
   not_admin:"Your organiser code no longer works. Log in again.",
   code_too_short:"Use at least 4 letters or digits.",
   code_in_use:"That code is already used by a team.",
-  hunt_live:"The active hunt is live. End it first — only one hunt can be open at a time.",
+  hunt_live:"Your active hunt is live. End it first — you can only have one hunt open at a time.",
+  hunt_in_use:"That hunt is open for an organiser right now, so it can't be deleted.",
+  not_yours:"That hunt belongs to another organiser. Copy it to use it yourself.",
+  not_owner:"Only the main organiser can manage organisers.",
+  not_self:"You can't remove yourself.",
   hunt_active:"You can't delete the active hunt. Open another hunt first.",
   no_hunt:"That hunt no longer exists.",
 };
@@ -615,7 +619,7 @@ function renderAdminShell() {
   ui.screen = "admin"; stopGeo();
   app.innerHTML = `
     <header class="topbar">
-      <div class="ttl"><div class="eyebrow">Organiser</div><h2 id="a-title"></h2></div>
+      <div class="ttl"><div class="eyebrow" id="a-who">Organiser</div><h2 id="a-title"></h2></div>
       <span id="a-status" class="hide-sm"></span>
       <span id="a-statusbtn"></span>
       <button class="iconbtn" data-act="a-logout" aria-label="Log out">${I.out}</button>
@@ -691,6 +695,7 @@ function updateAdmin() {
     renderAdminPanel(true);
   }
   $("#a-title").textContent = c.title || "The Investment Trail";
+  $("#a-who").textContent = "Organiser" + (S.me && S.me.name && S.me.name !== "Organiser" ? " · " + S.me.name : "");
   $("#a-status").innerHTML = `<span class="statuspill st-${st}">${st === "setup" ? "Not started" : st === "live" ? "Live" : "Ended"}</span>`;
   const sb_ = $("#a-statusbtn");
   if (sb_._st !== st) { sb_._st = st; sb_.innerHTML = st === "setup" ? `<button class="btn primary sm" data-act="a-start">Start hunt</button>` : st === "live" ? `<button class="btn gold sm" data-act="a-end">End &amp; pick winner</button>` : `<button class="btn sm" data-act="a-reopen">Reopen</button>`; }
@@ -865,20 +870,32 @@ function openBonusEditor(id, at) {
 }
 
 function panelHunts(body) {
-  const f = ensure(body, "hu-new", `<div id="hu-new" style="display:grid;gap:10px"><h3 style="font-size:18px">Hunts</h3>
-    <p class="hint" style="margin:0">You can keep several hunts. One is active at a time: that's the hunt you edit here and the one the teams play. Team codes only work for the active hunt. You can switch when the active hunt isn't live.</p>
+  const f = ensure(body, "hu-new", `<div id="hu-new" style="display:grid;gap:10px"><h3 style="font-size:18px">Your hunts</h3>
+    <p class="hint" style="margin:0">You can keep several hunts. One of yours is active: that's the hunt you edit here and the one your teams play. Other organisers have their own active hunt, so you never get in each other's way. You can switch when your active hunt isn't live.</p>
     <form class="card" id="hu-f"><h3>New hunt</h3><div class="chatform"><input id="hu-title" placeholder="e.g. Zuidas — spring 2027" maxlength="60"><button class="btn primary">Create &amp; open</button></div><small class="hint">Starts empty. To reuse points and bonus tasks, copy an existing hunt below instead.</small></form></div>`);
   const hf = $("#hu-f", f);
   if (!hf._b) { hf._b = true; hf.onsubmit = async e => { e.preventDefault(); const i = $("#hu-title"); const r = await act({title:i.value.trim()}, "hunt_new", "New hunt created and opened"); if (r.ok) { i.value = ""; ui.tab = "points"; } }; }
   const live = status() === "live";
   const stLabel = st => st === "setup" ? "Not started" : st === "live" ? "Live" : "Ended";
-  patch(ensure(body, "hu-list", `<div id="hu-list" class="list"></div>`), (S.hunts || []).map(h => `<div class="card">
+  const date = d => new Date(d).toLocaleDateString([], {day:"numeric", month:"short", year:"numeric"});
+  const card = h => `<div class="card">
       <div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1;min-width:0"><b style="font-family:var(--f-display);font-size:16px;overflow-wrap:anywhere">${esc(h.title)}</b>
-        <div class="muted" style="font-size:12.5px">${h.points} points · ${h.bonuses} bonus tasks · ${h.teams} teams · created ${new Date(h.created_at).toLocaleDateString([], {day:"numeric", month:"short", year:"numeric"})}</div></div>
+        <div class="muted" style="font-size:12.5px">${h.mine ? "" : `${esc(h.owner_name || "Organiser")} · `}${h.points} points · ${h.bonuses} bonus tasks · ${h.teams} teams · created ${date(h.created_at)}</div></div>
         <span class="statuspill st-${h.status}">${stLabel(h.status)}</span></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${h.active ? `<span class="chip" style="color:var(--brand);border-color:var(--brand)">Active — you're editing this one</span>` : `<button class="btn sm primary" data-act="hunt-open" data-id="${h.id}" ${live ? "disabled title=\"End the live hunt first\"" : ""}>Open</button>`}
-        <button class="btn sm" data-act="hunt-copy" data-id="${h.id}">Copy</button><span style="flex:1"></span>${h.active ? "" : `<button class="btn sm danger" data-act="hunt-del" data-id="${h.id}">Delete</button>`}</div>
-    </div>`).join("") + (live ? `<p class="hint" style="margin:0">The active hunt is live, so you can't open another one until you end it.</p>` : ""));
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${!h.mine ? "" : h.active ? `<span class="chip" style="color:var(--brand);border-color:var(--brand)">Active — you're editing this one</span>` : `<button class="btn sm primary" data-act="hunt-open" data-id="${h.id}" ${live ? "disabled title=\"End the live hunt first\"" : ""}>Open</button>`}
+        <button class="btn sm" data-act="hunt-copy" data-id="${h.id}">${h.mine ? "Copy" : "Copy to my hunts"}</button><span style="flex:1"></span>${h.mine && !h.active ? `<button class="btn sm danger" data-act="hunt-del" data-id="${h.id}">Delete</button>` : ""}</div>
+    </div>`;
+  const mine = (S.hunts || []).filter(h => h.mine), others = (S.hunts || []).filter(h => !h.mine);
+  patch(ensure(body, "hu-list", `<div id="hu-list" class="list"></div>`), mine.map(card).join("") + (live ? `<p class="hint" style="margin:0">Your active hunt is live, so you can't open another one until you end it.</p>` : "")
+    + (others.length ? `<h3 style="font-size:16px;margin-top:10px">Other organisers' hunts</h3><p class="hint" style="margin:0">You can't change these, but you can copy one to start from.</p>` + others.map(card).join("") : ""));
+}
+
+function openOrgCode(id, name) {
+  openSheet(`<div class="sheet-h"><div class="t"><div class="eyebrow">Organiser</div><h2>New code for ${esc(name)}</h2></div><button class="btn ghost sm" data-close>Close</button></div>
+    <form class="form" id="oc"><label>New code<input id="oc-code" maxlength="24" autocomplete="off" placeholder="e.g. SANNE-2027" autofocus><small>Their old code stops working straight away.</small></label><div class="actions"><button class="btn primary">Save code</button></div></form>`, sh => {
+    $("[data-close]", sh).onclick = closeSheet;
+    $("#oc", sh).onsubmit = async e => { e.preventDefault(); const code = $("#oc-code", sh).value.trim(); const r = await act({id, code}, "org_code", `${name} now logs in with ${code.toUpperCase()}`); if (r.ok) closeSheet(); };
+  });
 }
 function panelSettings(body) {
   const c = cfg();
@@ -894,6 +911,21 @@ function panelSettings(body) {
     f.onsubmit = e => { e.preventDefault(); act({title:$("#st-title").value.trim(), radius:Math.round(+$("#st-rad").value || 15), spread_start:$("#st-spread").checked, finish_title:$("#st-ft").value.trim(), finish_text:$("#st-fx").value.trim()}, "config", "Settings saved"); }; }
   const a = ensure(body, "st-adm", `<form id="st-adm" class="card form"><h3>Organiser code</h3><p class="hint" style="margin:0">The code you log in with as organiser. Keep it to yourself.</p><div class="chatform"><input id="st-code" placeholder="New organiser code" maxlength="24" autocomplete="off"><button class="btn">Change</button></div></form>`);
   if (!a._b) { a._b = true; a.onsubmit = async e => { e.preventDefault(); const v = $("#st-code").value.trim(); const r = await act({code:v}, "admin_code", "Organiser code changed"); if (r.ok) { saveSession({...session, code:v}); $("#st-code").value = ""; } }; }
+  // organisers (main organiser only)
+  const org = ensure(body, "st-org", `<div id="st-org" class="card form"><h3>Organisers</h3>
+    <p class="hint" style="margin:0">Give someone their own organiser code. They get their own hunts and their own active hunt, so you can both run a hunt at the same time without getting in each other's way. They can see and copy your hunts, but not change them.</p>
+    <div id="st-org-list" class="list"></div>
+    <form id="st-org-f" style="display:grid;gap:8px"><div class="row2"><input id="st-org-name" placeholder="Name, e.g. Sanne" maxlength="40"><input id="st-org-code" placeholder="Their code, e.g. SANNE-2026" maxlength="24" autocomplete="off"></div><button class="btn primary" style="justify-self:end">Add organiser</button></form></div>`);
+  org.hidden = !(S.me && S.me.is_owner);
+  if (S.me && S.me.is_owner) {
+    patch($("#st-org-list", org), (S.admins || []).map(o => `<div class="item"><div class="numpin" style="background:${o.is_owner ? BRAND : "#56706B"}"><span>${esc((o.name || "?").slice(0, 1).toUpperCase())}</span></div>
+      <div class="main"><b>${esc(o.name)}${o.id === S.me.id ? " (you)" : ""}</b><small>${o.hunt_title ? `${esc(o.hunt_title)} · ${o.hunt_status === "live" ? "live" : o.hunt_status === "ended" ? "ended" : "not started"}` : "No active hunt"}</small></div>
+      <span style="display:flex;gap:6px">${o.id === S.me.id ? "" : `<button class="btn sm" data-act="org-code" data-id="${o.id}" data-name="${esc(o.name)}">New code</button><button class="btn sm danger" data-act="org-del" data-id="${o.id}">Remove</button>`}</span></div>`).join(""));
+    const of = $("#st-org-f", org);
+    if (!of._b) { of._b = true; of.onsubmit = async e => { e.preventDefault(); const name = $("#st-org-name").value.trim(), code = $("#st-org-code").value.trim();
+      if (!name || !code) return toast("Fill in a name and a code.");
+      const r = await act({name, code}, "org_new", `${name} can now log in with ${code.toUpperCase()}`); if (r.ok) { $("#st-org-name").value = ""; $("#st-org-code").value = ""; } }; }
+  }
   const z = ensure(body, "st-reset", `<div id="st-reset" class="card"><h3>Test run finished?</h3><p class="hint" style="margin:0">Clear all answers, unlocks, chat messages and bonus claims. Teams, points and bonus tasks stay. The hunt goes back to “Not started”.</p><div class="actions"><button class="btn danger" id="st-rst">Clear all progress</button></div></div>`);
   const rb = $("#st-rst", z); if (!rb._b) { rb._b = true; rb.onclick = () => { if (!armed(rb, "Tap again — this can't be undone")) return; act({}, "reset", "All progress cleared"); }; }
 }
@@ -919,6 +951,8 @@ document.addEventListener("click", async e => {
     case "a-reopen": act({}, "reopen", "Hunt reopened"); break;
     case "tab": ui.tab = el.dataset.tab; renderAdminPanel(true); break;
     case "hunt-open": act({id}, "hunt_activate", "Hunt opened"); break;
+    case "org-del": if (armed(el, "Tap again — their hunts move to you")) act({id}, "org_delete", "Organiser removed"); break;
+    case "org-code": openOrgCode(id, el.dataset.name); break;
     case "hunt-copy": act({id}, "hunt_copy", "Copy saved — open it to edit"); break;
     case "hunt-del": if (armed(el, "Tap again — deletes its teams and answers too")) act({id}, "hunt_delete", "Hunt deleted"); break;
     case "mode": setMode(el.dataset.mode); if (el.dataset.mode === "area" && !cfg().bbox) amap.setView([52.2, 5.3], 7); break;

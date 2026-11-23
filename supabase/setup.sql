@@ -16,9 +16,13 @@
 --    before its next point appears; other teams don't see it meanwhile.
 --    After one team finishes it the bonus closes; the organiser can offer
 --    it again to the teams that haven't done it yet.
---  * Several hunts can be saved. Exactly one is active: that is the hunt
---    the organiser edits and the teams play. Team codes only work for the
---    active hunt. Switching is blocked while the active hunt is live.
+--  * There can be several organisers, each with their own code, their own
+--    saved hunts and their own active hunt — so two organisers never get in
+--    each other's way and their hunts can be played at the same time.
+--    The first organiser (the owner) can add and remove other organisers.
+--  * Each organiser has exactly one active hunt: the one they edit and their
+--    teams play. Team codes only work while their hunt is someone's active
+--    hunt. Switching is blocked while the active hunt is live.
 --  * "ticks" is a one-row public counter; the app listens to it via
 --    Realtime and re-fetches its state when it changes.
 -- =====================================================================
@@ -181,8 +185,45 @@ begin
   update public.bonuses set hunt_id = h where hunt_id is null;
 end $$;
 
+-- ---------- organisers (added later; safe to re-run) ----------
+create table if not exists public.admins (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null default 'Organiser',
+  code_hash   text not null,
+  is_owner    boolean not null default false,
+  active_hunt uuid references public.hunts(id) on delete set null,
+  created_at  timestamptz not null default now()
+);
+alter table public.hunts add column if not exists admin_id uuid references public.admins(id) on delete set null;
+
+-- The existing organiser code becomes the first organiser (the owner), who owns all existing hunts.
+do $$
+declare a uuid;
+begin
+  if not exists (select 1 from public.admins) then
+    insert into public.admins (name, code_hash, is_owner, active_hunt)
+    select 'Organiser', admin_hash, true, active_hunt from public.settings where id = 1
+    returning id into a;
+  end if;
+  select id into a from public.admins where is_owner order by created_at limit 1;
+  update public.hunts set admin_id = a where admin_id is null;
+end $$;
+
+-- Hunts created without an organiser (e.g. by an import script) belong to the owner.
+create or replace function public._hunt_default_owner() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.admin_id is null then
+    new.admin_id := (select id from admins where is_owner order by created_at limit 1);
+  end if;
+  return new;
+end $$;
+drop trigger if exists hunts_default_owner on public.hunts;
+create trigger hunts_default_owner before insert on public.hunts for each row execute function public._hunt_default_owner();
+
 -- ---------- row level security ----------
 alter table public.hunts    enable row level security;
+alter table public.admins   enable row level security;
 alter table public.settings enable row level security;
 alter table public.teams    enable row level security;
 alter table public.points   enable row level security;
@@ -216,20 +257,29 @@ create policy "trail photo upload" on storage.objects for insert to anon, authen
 create or replace function public._norm(t text) returns text
 language sql immutable as $$ select upper(regexp_replace(coalesce(t,''), '[^A-Za-z0-9]', '', 'g')) $$;
 
+create or replace function public._admin(p_code text) returns uuid
+language sql stable security definer set search_path = public, extensions as $$
+  select id from admins where _norm(p_code) <> '' and code_hash = extensions.crypt(_norm(p_code), code_hash)
+  order by created_at limit 1
+$$;
+
 create or replace function public._is_admin(p_code text) returns boolean
 language sql stable security definer set search_path = public, extensions as $$
-  select exists (select 1 from settings where admin_hash = extensions.crypt(_norm(p_code), admin_hash))
+  select _admin(p_code) is not null
 $$;
 
-create or replace function public._active() returns uuid
-language sql stable security definer set search_path = public as $$
-  select active_hunt from settings where id = 1
+-- is this code already used by an organiser or a team?
+create or replace function public._code_taken(p_code text, p_except uuid default null) returns boolean
+language sql stable security definer set search_path = public, extensions as $$
+  select exists (select 1 from teams where _norm(code) = _norm(p_code))
+      or exists (select 1 from admins where id is distinct from p_except and code_hash = extensions.crypt(_norm(p_code), code_hash))
 $$;
 
--- a team code only works for the active hunt
+-- a team code only works while its hunt is an organiser's active hunt
 create or replace function public._team(p_code text) returns uuid
 language sql stable security definer set search_path = public as $$
-  select id from teams where _norm(code) = _norm(p_code) and _norm(p_code) <> '' and hunt_id = _active() limit 1
+  select id from teams where _norm(code) = _norm(p_code) and _norm(p_code) <> ''
+    and hunt_id in (select active_hunt from admins where active_hunt is not null) limit 1
 $$;
 
 create or replace function public._bump() returns void
@@ -274,7 +324,7 @@ create or replace function public.login(p_code text) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare t uuid;
 begin
-  if _is_admin(p_code) then return jsonb_build_object('role', 'admin'); end if;
+  if _admin(p_code) is not null then return jsonb_build_object('role', 'admin'); end if;
   t := _team(p_code);
   if t is not null then return jsonb_build_object('role', 'team', 'team_id', t); end if;
   return null;
@@ -318,20 +368,32 @@ $$;
 create or replace function public.get_state(p_code text) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare
-  s hunts; tid uuid; adm boolean; done boolean; nxt uuid; act uuid;
+  s hunts; tid uuid; aid uuid; adm boolean; done boolean; nxt uuid; act uuid; me admins;
   res jsonb;
 begin
-  select * into s from hunts where id = _active();
-  adm := _is_admin(p_code);
+  aid := _admin(p_code); adm := aid is not null;
   if not adm then tid := _team(p_code); end if;
   if not adm and tid is null then return null; end if;
+  if adm then
+    select * into me from admins where id = aid;
+    select * into s from hunts where id = me.active_hunt;
+  else
+    select * into s from hunts where id = (select hunt_id from teams where id = tid);
+  end if;
 
   if adm then
     return jsonb_build_object(
       'role', 'admin',
+      'me', jsonb_build_object('id', me.id, 'name', me.name, 'is_owner', me.is_owner),
+      'admins', case when me.is_owner then coalesce((select jsonb_agg(jsonb_build_object(
+          'id', ad.id, 'name', ad.name, 'is_owner', ad.is_owner, 'created_at', ad.created_at,
+          'hunt_title', (select title from hunts where id = ad.active_hunt),
+          'hunt_status', (select status from hunts where id = ad.active_hunt)) order by ad.created_at) from admins ad), '[]') end,
       'config', to_jsonb(s),
       'hunts', coalesce((select jsonb_agg(jsonb_build_object(
           'id', hh.id, 'title', hh.title, 'status', hh.status, 'created_at', hh.created_at, 'active', hh.id = s.id,
+          'mine', hh.admin_id = aid, 'owner_name', (select name from admins where id = hh.admin_id),
+          'in_use', hh.id in (select active_hunt from admins where active_hunt is not null),
           'points', (select count(*) from points where hunt_id = hh.id),
           'bonuses', (select count(*) from bonuses where hunt_id = hh.id),
           'teams', (select count(*) from teams where hunt_id = hh.id)) order by hh.created_at desc) from hunts hh), '[]'),
@@ -403,7 +465,7 @@ declare
 begin
   tid := _team(p_code);
   if tid is null then raise exception 'not_logged_in'; end if;
-  select * into s from hunts where id = _active();
+  select * into s from hunts where id = (select hunt_id from teams where id = tid);
   act := _active_bonus(tid);
 
   if p_action = 'ping' then
@@ -510,9 +572,12 @@ end $$;
 -- ---------- organiser actions ----------
 create or replace function public.admin_action(p_code text, p_action text, p jsonb default '{}') returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
-declare new_id uuid; c text; w uuid; h uuid := _active();
+declare new_id uuid; c text; w uuid; h uuid; a uuid; me admins;
 begin
-  if not _is_admin(p_code) then raise exception 'not_admin'; end if;
+  a := _admin(p_code);
+  if a is null then raise exception 'not_admin'; end if;
+  select * into me from admins where id = a;
+  h := me.active_hunt;
 
   if p_action = 'config' then
     update hunts set
@@ -530,8 +595,33 @@ begin
 
   elsif p_action = 'admin_code' then
     if length(_norm(p->>'code')) < 4 then raise exception 'code_too_short'; end if;
-    if exists (select 1 from teams where _norm(code) = _norm(p->>'code')) then raise exception 'code_in_use'; end if;
-    update settings set admin_hash = extensions.crypt(_norm(p->>'code'), extensions.gen_salt('bf')) where id = 1;
+    if _code_taken(p->>'code', a) then raise exception 'code_in_use'; end if;
+    update admins set code_hash = extensions.crypt(_norm(p->>'code'), extensions.gen_salt('bf')) where id = a;
+
+  -- ----- organisers (owner only) -----
+  elsif p_action = 'org_new' then
+    if not me.is_owner then raise exception 'not_owner'; end if;
+    if length(_norm(p->>'code')) < 4 then raise exception 'code_too_short'; end if;
+    if _code_taken(p->>'code') then raise exception 'code_in_use'; end if;
+    insert into admins (name, code_hash)
+    values (coalesce(nullif(left(trim(p->>'name'), 40), ''), 'Organiser'), extensions.crypt(_norm(p->>'code'), extensions.gen_salt('bf')))
+    returning id into new_id;
+    insert into hunts (title, admin_id) values ('New hunt', new_id) returning id into w;
+    update admins set active_hunt = w where id = new_id;
+  elsif p_action = 'org_code' then
+    if not me.is_owner then raise exception 'not_owner'; end if;
+    if length(_norm(p->>'code')) < 4 then raise exception 'code_too_short'; end if;
+    if _code_taken(p->>'code', (p->>'id')::uuid) then raise exception 'code_in_use'; end if;
+    update admins set code_hash = extensions.crypt(_norm(p->>'code'), extensions.gen_salt('bf')) where id = (p->>'id')::uuid;
+  elsif p_action = 'org_rename' then
+    if not me.is_owner and (p->>'id')::uuid <> a then raise exception 'not_owner'; end if;
+    update admins set name = coalesce(nullif(left(trim(p->>'name'), 40), ''), name) where id = (p->>'id')::uuid;
+  elsif p_action = 'org_delete' then
+    -- their hunts (and the teams in them) move to the owner; their active hunt stops being playable
+    if not me.is_owner then raise exception 'not_owner'; end if;
+    if (p->>'id')::uuid = a then raise exception 'not_self'; end if;
+    update hunts set admin_id = a where admin_id = (p->>'id')::uuid;
+    delete from admins where id = (p->>'id')::uuid and not is_owner;
 
   elsif p_action = 'start' then
     update hunts set status = 'live' where id = h;
@@ -641,22 +731,22 @@ begin
   -- ----- hunts: only one is active (edited and played) at a time -----
   elsif p_action = 'hunt_new' then
     if (select status from hunts where id = h) = 'live' then raise exception 'hunt_live'; end if;
-    insert into hunts (title) values (coalesce(nullif(trim(p->>'title'), ''), 'New hunt')) returning id into new_id;
-    update settings set active_hunt = new_id where id = 1;
+    insert into hunts (title, admin_id) values (coalesce(nullif(trim(p->>'title'), ''), 'New hunt'), a) returning id into new_id;
+    update admins set active_hunt = new_id where id = a;
     perform _bump();
     return jsonb_build_object('ok', true, 'id', new_id);
 
   elsif p_action = 'hunt_activate' then
     if (p->>'id')::uuid is distinct from h then
       if (select status from hunts where id = h) = 'live' then raise exception 'hunt_live'; end if;
-      if not exists (select 1 from hunts where id = (p->>'id')::uuid) then raise exception 'no_hunt'; end if;
-      update settings set active_hunt = (p->>'id')::uuid where id = 1;
+      if not exists (select 1 from hunts where id = (p->>'id')::uuid and admin_id = a) then raise exception 'not_yours'; end if;
+      update admins set active_hunt = (p->>'id')::uuid where id = a;
     end if;
 
   elsif p_action = 'hunt_copy' then
-    -- copies the area, finish, points and bonus tasks; not the teams or any progress
-    insert into hunts (title, organizer, status, bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity, spread_start)
-    select left('Copy of ' || title, 60), organizer, 'setup', bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity, spread_start
+    -- copies the area, finish, points and bonus tasks (also from another organiser's hunt); not the teams or any progress
+    insert into hunts (admin_id, title, organizer, status, bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity, spread_start)
+    select a, left('Copy of ' || title, 60), organizer, 'setup', bbox, finish, finish_title, finish_text, radius, bg_url, bg_opacity, spread_start
       from hunts where id = (p->>'id')::uuid
     returning id into new_id;
     if new_id is null then raise exception 'no_hunt'; end if;
@@ -669,7 +759,9 @@ begin
 
   elsif p_action = 'hunt_delete' then
     if (p->>'id')::uuid = h then raise exception 'hunt_active'; end if;
-    delete from hunts where id = (p->>'id')::uuid;
+    if (p->>'id')::uuid in (select active_hunt from admins where active_hunt is not null) then raise exception 'hunt_in_use'; end if;
+    if not exists (select 1 from hunts where id = (p->>'id')::uuid and admin_id = a) then raise exception 'not_yours'; end if;
+    delete from hunts where id = (p->>'id')::uuid and admin_id = a;
 
   elsif p_action = 'msg' then
     if coalesce(trim(p->>'body'), '') = '' then return '{"ok":false}'; end if;
@@ -688,9 +780,11 @@ begin
 end $$;
 
 -- ---------- who may call what ----------
-revoke all on function public._norm(text), public._is_admin(text), public._team(text), public._bump(),
+drop function if exists public._active();
+revoke all on function public._norm(text), public._is_admin(text), public._admin(text), public._code_taken(text, uuid),
+  public._hunt_default_owner(), public._team(text), public._bump(),
   public._dist(float8, float8, float8, float8), public._new_code(), public._score(uuid), public._all_done(uuid),
-  public._team_seq(uuid), public._next_point(uuid), public._active_bonus(uuid), public._active()
+  public._team_seq(uuid), public._next_point(uuid), public._active_bonus(uuid)
   from public, anon, authenticated;
 grant execute on function public._norm(text) to anon, authenticated;
 grant execute on function public.login(text), public.get_state(text),

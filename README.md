@@ -34,6 +34,7 @@ In `supabase/hunts/` staan importscripts, zoals [`verloren-turnster.sql`](supaba
 
 | Wat | Hoe |
 |---|---|
+| Meerdere organisatoren | *Settings → Organisers* (alleen voor de hoofdorganisator, de eerste code). Geef iemand een naam en een eigen code. Elke organisator heeft eigen speurtochten en een eigen actieve speurtocht, dus jullie kunnen tegelijk een speurtocht draaien zonder elkaar in de weg te zitten. Ze zien jouw speurtochten en kunnen die kopiëren, maar niet wijzigen. Met *Remove* gaan hun speurtochten naar jou |
 | Meerdere speurtochten | Tab *Hunts*. Je kunt meerdere speurtochten bewaren; er is er altijd één actief. Die bewerk je, en die spelen de teams. Teamcodes werken alleen voor de actieve speurtocht. *Create & open* maakt een lege nieuwe, *Copy* kopieert gebied, finish, punten en bonussen (zonder teams en voortgang), *Open* maakt een andere speurtocht actief. Wisselen kan niet zolang de actieve speurtocht live is |
 | Gebied kiezen | *Select area*, tik twee hoeken aan |
 | Punt toevoegen | *Add point* en tik op de kaart. Kleur = type: blauw = vraag, oranje = opdracht, roze = activiteit |
