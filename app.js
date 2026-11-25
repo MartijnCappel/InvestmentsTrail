@@ -717,10 +717,12 @@ function renderAdminPanel(force) {
 function ensure(body, id, html) { let el = $("#" + id, body); if (!el) { body.insertAdjacentHTML("beforeend", html); el = $("#" + id, body); } return el; }
 
 function panelPoints(body) {
-  ensure(body, "pp-head", `<div id="pp-head" style="display:grid;gap:10px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><h3 style="flex:1;font-size:18px">Points</h3><button class="btn primary sm" data-act="mode" data-mode="point">+ Add point</button></div><p class="hint" style="margin:0">Tap “Add point”, then tap the map. Drag a pin to move it. Colours: <b style="color:${KINDS.question.c}">question</b>, <b style="color:${KINDS.assignment.c}">assignment</b>, <b style="color:${KINDS.activity.c}">activity</b>. Each team walks the points in number order from its own start point (set under Teams) and only ever sees its next stop. Instructions open once the team is within the radius.</p></div>`);
+  ensure(body, "pp-head", `<div id="pp-head" style="display:grid;gap:10px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><h3 style="flex:1;font-size:18px">Points</h3><button class="btn primary sm" data-act="mode" data-mode="point">+ Add point</button></div><p class="hint" style="margin:0">Tap “Add point”, then tap the map. Drag a pin to move it. Colours: <b style="color:${KINDS.question.c}">question</b>, <b style="color:${KINDS.assignment.c}">assignment</b>, <b style="color:${KINDS.activity.c}">activity</b>. Each team walks the points in number order from its own start point (set under Teams) and only ever sees its next stop. Use the arrows to change the order. Instructions open once the team is within the radius.</p></div>`);
   const list = ensure(body, "pp-list", `<div id="pp-list" class="list"></div>`);
   patch(list, S.points.length ? S.points.map(p => { const k = KINDS[p.kind]; const n = S.subs.filter(s => s.target_id === p.id && s.status !== "rejected").length;
-    return `<div class="item click" data-act="edit-point" data-id="${p.id}"><div class="numpin" style="background:${k.c}"><span>${p.n}</span></div><div class="main"><b>${esc(p.title)}</b><small>${k.label} · ${RESP[p.resp]} · ${p.radius || cfg().radius} m · done by ${n}/${S.teams.length}</small></div><b class="num">${p.value}</b></div>`; }).join("")
+    const i = S.points.indexOf(p), last = S.points.length - 1;
+    return `<div class="item click pt-row" data-act="edit-point" data-id="${p.id}"><div class="numpin" style="background:${k.c}"><span>${p.n}</span></div><div class="main"><b>${esc(p.title)}</b><small>${k.label} · ${RESP[p.resp]} · ${p.value} pts · ${p.radius || cfg().radius} m · done by ${n}/${S.teams.length}</small></div>
+      <span class="order"><button class="ordbtn" data-act="pt-up" data-id="${p.id}" aria-label="Move ${esc(p.title)} up" ${i === 0 ? "disabled" : ""}><svg viewBox="0 0 24 24" class="icon"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="ordbtn" data-act="pt-down" data-id="${p.id}" aria-label="Move ${esc(p.title)} down" ${i === last ? "disabled" : ""}><svg viewBox="0 0 24 24" class="icon"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></span></div>`; }).join("")
     : `<div class="empty"><b>No points yet</b>Select your hunt area first, then add points by tapping the map.</div>`);
   const c = cfg();
   patch(ensure(body, "pp-fin", `<div id="pp-fin"></div>`), `<div class="item"><div class="numpin" style="background:${BRAND}"><span>⚑</span></div><div class="main"><b>Finish</b><small>${c.finish ? "Revealed with a compass once a team has done every task" : "Not set yet — use “Set finish” on the map"}</small></div><button class="btn sm" data-act="mode" data-mode="finish">${c.finish ? "Move" : "Set"}</button></div>`);
@@ -957,6 +959,14 @@ document.addEventListener("click", async e => {
     case "hunt-del": if (armed(el, "Tap again — deletes its teams and answers too")) act({id}, "hunt_delete", "Hunt deleted"); break;
     case "mode": setMode(el.dataset.mode); if (el.dataset.mode === "area" && !cfg().bbox) amap.setView([52.2, 5.3], 7); break;
     case "edit-point": openPointEditor(id); break;
+    case "pt-up": case "pt-down": {
+      const ids = S.points.map(p => p.id), i = ids.indexOf(id), j = a === "pt-up" ? i - 1 : i + 1;
+      if (i < 0 || j < 0 || j >= ids.length) break;
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      // show the new order straight away, then save it
+      S.points = ids.map((pid, k) => ({...S.points.find(p => p.id === pid), n:k + 1})); aMarkKey = ""; drawAdminMarkers(); renderAdminPanel();
+      act({ids}, "points_order", status() === "live" ? "Order saved — teams follow it from their next stop" : null);
+    } break;
     case "edit-team": openTeamEditor(id); break;
     case "chat-team": ui.chatTeam = id; ui.tab = "chat"; renderAdminPanel(true); break;
     case "copy": copyText(el.dataset.text); break;

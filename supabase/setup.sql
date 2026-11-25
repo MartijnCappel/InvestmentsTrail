@@ -665,6 +665,12 @@ begin
       radius = case when p ? 'radius' then nullif(p->>'radius', '')::int else radius end
     where id = (p->>'id')::uuid;
 
+  elsif p_action = 'points_order' then
+    -- p.ids: the point ids of the active hunt in their new order; numbers become 1, 2, 3, …
+    update points set n = o.ord from jsonb_array_elements_text(p->'ids') with ordinality o(pid, ord)
+     where points.hunt_id = h and points.id = o.pid::uuid;
+    update points set n = r.rn from (select id, row_number() over (order by n, created_at) rn from points where hunt_id = h) r where points.id = r.id;
+
   elsif p_action = 'point_delete' then
     delete from points where id = (p->>'id')::uuid;
     delete from subs where target = 'point' and target_id = (p->>'id')::uuid;

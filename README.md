@@ -39,6 +39,7 @@ In `supabase/hunts/` staan importscripts, zoals [`verloren-turnster.sql`](supaba
 | Gebied kiezen | *Select area*, tik twee hoeken aan |
 | Punt toevoegen | *Add point* en tik op de kaart. Kleur = type: blauw = vraag, oranje = opdracht, roze = activiteit |
 | Punt verplaatsen | Sleep de pin |
+| Volgorde van de punten | Tab *Points*: met de pijltjes ▲▼ naast een punt schuif je het omhoog of omlaag. De nummers op de kaart lopen direct mee |
 | Straal | Standaard 15 m (Settings); per punt aan te passen |
 | Teams | Tab *Teams*: aanmaken, code delen, voortgang, volgend punt en laatste locatie bekijken |
 | Iedereen bij punt 1 beginnen | *Settings → Spread teams over different start points* uitzetten. Handig voor een route die een verhaal vertelt |
